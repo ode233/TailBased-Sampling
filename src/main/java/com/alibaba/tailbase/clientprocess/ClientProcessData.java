@@ -5,7 +5,10 @@ import com.alibaba.fastjson.TypeReference;
 import com.alibaba.tailbase.CommonController;
 import com.alibaba.tailbase.Constants;
 import com.alibaba.tailbase.Utils;
-import okhttp3.*;
+import okhttp3.FormBody;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.util.StringUtils;
@@ -16,7 +19,6 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.Proxy;
 import java.net.URL;
-import java.rmi.MarshalledObject;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -145,7 +147,7 @@ public class ClientProcessData implements Runnable {
 
 
     public static String getWrongTrace(String wrongTraceIdList, int batchPos) {
-        List<String> traceIdList = JSON.parseObject(wrongTraceIdList, new TypeReference<List<String>>(){});
+        HashSet<String> traceIdList = JSON.parseObject(wrongTraceIdList, new TypeReference<HashSet<String>>(){});
         Map<String,List<Map<Long,String>>> wrongTraceMap = new HashMap<>();
         int pos = batchPos % BATCH_COUNT;
         int previous = pos - 1;
@@ -165,9 +167,12 @@ public class ClientProcessData implements Runnable {
         return JSON.toJSONString(wrongTraceMap);
     }
 
-    private static void getWrongTraceWithBatch(int batchPos,  List<String> traceIdList, Map<String,List<Map<Long,String>>> wrongTraceMap) {
+    private static void getWrongTraceWithBatch(int batchPos,  HashSet<String> traceIdList, Map<String,List<Map<Long,String>>> wrongTraceMap) {
         // donot lock traceMap,  traceMap may be clear anytime.
         Map<String, List<String>> traceMap = BATCH_TRACE_LIST.get(batchPos);
+        if(traceMap.size() == 0){
+            return;
+        }
         // TODO traceMap为空时就不需要再去找了
         for (String traceId : traceIdList) {
             List<String> spanList = traceMap.get(traceId);

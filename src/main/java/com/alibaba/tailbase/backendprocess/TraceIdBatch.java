@@ -3,6 +3,7 @@ package com.alibaba.tailbase.backendprocess;
 import com.alibaba.tailbase.Constants;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 
 public class TraceIdBatch {
@@ -10,7 +11,7 @@ public class TraceIdBatch {
 
     private int batchPos = 0;
     private int processCount = 0;
-    private List<String> traceIdList = new ArrayList<>(Constants.BATCH_SIZE / 10);
+    private HashSet<String> traceIdList = new HashSet<>(Constants.BATCH_SIZE / 10);
 
     public int getBatchPos() {
         return batchPos;
@@ -28,7 +29,7 @@ public class TraceIdBatch {
         this.processCount = processCount;
     }
 
-    public List<String> getTraceIdList() {
+    public HashSet<String> getTraceIdList() {
         return traceIdList;
     }
 }

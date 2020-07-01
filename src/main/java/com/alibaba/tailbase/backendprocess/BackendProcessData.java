@@ -231,7 +231,7 @@ public class BackendProcessData implements Runnable{
         int i1 = 0, i2 = 0;
         while(i1 < n1 && i2 < n2){
             Map.Entry<Long,String> entry1 = list1.get(i1).entrySet().iterator().next();
-            Map.Entry<Long,String> entry2 = list1.get(i2).entrySet().iterator().next();
+            Map.Entry<Long,String> entry2 = list2.get(i2).entrySet().iterator().next();
             if(entry1.getKey() <= entry2.getKey()){
                 s.append(entry1.getValue());
                 s.append("\n");
@@ -255,7 +255,6 @@ public class BackendProcessData implements Runnable{
             s.append("\n");
             i2++;
         }
-        LOGGER.info(s.toString());
         return Utils.MD5(s.toString());
     }
 }
