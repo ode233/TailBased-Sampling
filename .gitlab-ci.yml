@@ -1,24 +1,10 @@
 stages:
-  - build_java_package
-  - build_image
+  - build
 
-build_java_package:
-  stage: build_java_package
+build:
+  stage: build
   script:
     - mvn clean package
-  only:
-    refs:
-      - ode
-    changes:
-      - .gitlab-ci.yml
-      - src/**/*
-  tags:
-    - nscc #108节点
-
-build_image:
-  stage: build_image
-  script:
-    # 构建镜像
     - cp -f target/tailbaseSampling-1.0-SNAPSHOT.jar dockerfile/tailbaseSampling-1.0-SNAPSHOT.jar
     - docker build -t registry.tbocii.tk:8000/ody123/java-tail-based-sampling dockerfile/
     - docker push registry.tbocii.tk:8000/ody123/java-tail-based-sampling
