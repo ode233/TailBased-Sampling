@@ -164,6 +164,9 @@ public class ClientProcessData implements Runnable {
         // to clear spans, don't block client process thread. TODO to use lock/notify
         BATCH_TRACE_LIST.get(previous).clear();
         LOGGER.info("getWrongTrace, batchPos:" + batchPos);
+        for(List<Map<Long,String>> list : wrongTraceMap.values()){
+            list.sort(Comparator.comparing(o -> o.entrySet().iterator().next().getKey()));
+        }
         return JSON.toJSONString(wrongTraceMap);
     }
 

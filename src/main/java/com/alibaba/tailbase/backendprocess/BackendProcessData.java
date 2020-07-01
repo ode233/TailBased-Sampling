@@ -255,6 +255,9 @@ public class BackendProcessData implements Runnable{
             s.append("\n");
             i2++;
         }
+//        LOGGER.info("list1:\n"+list1);
+//        LOGGER.info("list2:\n"+list2);
+//        LOGGER.info("wrong trace:\n"+s);
         return Utils.MD5(s.toString());
     }
 }
