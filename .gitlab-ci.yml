@@ -1,0 +1,33 @@
+stages:
+  - build_java_package
+  - build_image
+
+build_java_package:
+  stage: build_java_package
+  script:
+    - sudo mvn clean package
+  only:
+    refs:
+      - ode
+    changes:
+      - .gitlab-ci.yml
+      - src/**/*
+  tags:
+    - nscc #108节点
+
+build_image:
+  stage: build_image
+  script:
+    # 构建镜像
+    - sudo cp -f target/tailbaseSampling-1.0-SNAPSHOT.jar dockerfile/tailbaseSampling-1.0-SNAPSHOT.jar
+    - sudo docker build -t registry.tbocii.tk:8000/ody123/java-tail-based-sampling dockerfile/
+    - sudo docker push registry.tbocii.tk:8000/ody123/java-tail-based-sampling
+  only:
+    refs:
+      - ode
+    changes:
+      - .gitlab-ci.yml
+      - dockerfile/**/*
+      - src/**/*
+  tags:
+    - nscc #108节点
