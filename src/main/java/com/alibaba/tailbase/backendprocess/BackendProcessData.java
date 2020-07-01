@@ -58,33 +58,34 @@ public class BackendProcessData implements Runnable{
                     }
                     continue;
                 }
-                Map<String, Set<String>> map = new HashMap<>();
-               // if (traceIdBatch.getTraceIdList().size() > 0) {
-                    int batchPos = traceIdBatch.getBatchPos();
-                    // to get all spans from remote
-                    for (String port : ports) {
-                        Map<String, List<String>> processMap =
-                                getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), port, batchPos);
-                        if (processMap != null) {
-                            for (Map.Entry<String, List<String>> entry : processMap.entrySet()) {
-                                String traceId = entry.getKey();
-                                map.computeIfAbsent(traceId, k -> new HashSet<>()).addAll(entry.getValue());
-                            }
+                int batchPos = traceIdBatch.getBatchPos();
+                Map<String, List<Map<Long,String>>> processMap1 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[0], batchPos);
+                Map<String, List<Map<Long,String>>> processMap2 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[1], batchPos);
+                if(processMap1 != null){
+                    for(Map.Entry<String, List<Map<Long,String>>> entry : processMap1.entrySet()){
+                        List<Map<Long,String>> list1 = entry.getValue();
+                        List<Map<Long,String>> list2 = new ArrayList<>();
+                        String traceId = entry.getKey();
+                        if(processMap2 != null){
+                            list2 = processMap2.computeIfAbsent(traceId, k -> new ArrayList<>());
+                            processMap2.remove(traceId);
                         }
+                        TRACE_CHECKSUM_MAP.put(traceId, mergeSort(list1, list2));
+                        LOGGER.info("getWrong:" + batchPos + ", traceIdsize:" + traceIdBatch.getTraceIdList().size());
                     }
-                    LOGGER.info("getWrong:" + batchPos + ", traceIdsize:" + traceIdBatch.getTraceIdList().size() + ",result:" + map.size());
-               // }
-
-                for (Map.Entry<String, Set<String>> entry : map.entrySet()) {
-                    String traceId = entry.getKey();
-                    Set<String> spanSet = entry.getValue();
-                    // order span with startTime
-                    String spans = spanSet.stream().sorted(
-                            Comparator.comparing(BackendProcessData::getStartTime)).collect(Collectors.joining("\n"));
-                    spans = spans + "\n";
-                    // output all span to check
-                   // LOGGER.info("traceId:" + traceId + ",value:\n" + spans);
-                    TRACE_CHECKSUM_MAP.put(traceId, Utils.MD5(spans));
+                }
+                if(processMap2 != null){
+                    for(Map.Entry<String, List<Map<Long,String>>> entry : processMap2.entrySet()){
+                        List<Map<Long,String>> list2 = entry.getValue();
+                        List<Map<Long,String>> list1 = new ArrayList<>();
+                        String traceId = entry.getKey();
+                        if(processMap1 != null){
+                            list1 = processMap1.computeIfAbsent(traceId, k -> new ArrayList<>());
+                            processMap1.remove(traceId);
+                        }
+                        TRACE_CHECKSUM_MAP.put(traceId, mergeSort(list1, list2));
+                        LOGGER.info("getWrong:" + batchPos + ", traceIdsize:" + traceIdBatch.getTraceIdList().size());
+                    }
                 }
             } catch (Exception e) {
                 // record batchPos when an exception  occurs.
@@ -112,15 +113,15 @@ public class BackendProcessData implements Runnable{
      * @param batchPos
      * @return
      */
-    private Map<String,List<String>>  getWrongTrace(@RequestParam String traceIdList, String port, int batchPos) {
+    private Map<String,List<Map<Long,String>>>  getWrongTrace(@RequestParam String traceIdList, String port, int batchPos) {
         try {
             RequestBody body = new FormBody.Builder()
                     .add("traceIdList", traceIdList).add("batchPos", batchPos + "").build();
             String url = String.format("http://localhost:%s/getWrongTrace", port);
             Request request = new Request.Builder().url(url).post(body).build();
             Response response = Utils.callHttp(request);
-            Map<String,List<String>> resultMap = JSON.parseObject(response.body().string(),
-                    new TypeReference<Map<String, List<String>>>() {});
+            Map<String,List<Map<Long,String>>> resultMap = JSON.parseObject(response.body().string(),
+                    new TypeReference<Map<String, List<Map<Long,String>>>>() {});
             response.close();
             return resultMap;
         } catch (Exception e) {
@@ -221,5 +222,40 @@ public class BackendProcessData implements Runnable{
         FINISH_PROCESS_COUNT++;
         LOGGER.warn("receive call 'finish', count:" + FINISH_PROCESS_COUNT);
         return "suc";
+    }
+
+    private String mergeSort(List<Map<Long,String>> list1, List<Map<Long,String>> list2){
+        StringBuilder s = new StringBuilder();
+        int n1 = list1.size();
+        int n2 = list2.size();
+        int i1 = 0, i2 = 0;
+        while(i1 < n1 && i2 < n2){
+            Map.Entry<Long,String> entry1 = list1.get(i1).entrySet().iterator().next();
+            Map.Entry<Long,String> entry2 = list1.get(i2).entrySet().iterator().next();
+            if(entry1.getKey() <= entry2.getKey()){
+                s.append(entry1.getValue());
+                s.append("\n");
+                i1++;
+            }
+            else{
+                s.append(entry2.getValue());
+                s.append("\n");
+                i2++;
+            }
+        }
+        while (i1 < n1){
+            Map.Entry<Long,String> entry1 = list1.get(i1).entrySet().iterator().next();
+            s.append(entry1.getValue());
+            s.append("\n");
+            i1++;
+        }
+        while (i2 < n2){
+            Map.Entry<Long,String> entry2 = list2.get(i2).entrySet().iterator().next();
+            s.append(entry2.getValue());
+            s.append("\n");
+            i2++;
+        }
+        LOGGER.info(s.toString());
+        return Utils.MD5(s.toString());
     }
 }

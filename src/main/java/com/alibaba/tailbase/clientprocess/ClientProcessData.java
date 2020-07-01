@@ -16,8 +16,11 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.Proxy;
 import java.net.URL;
+import java.rmi.MarshalledObject;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+
+import static com.alibaba.tailbase.backendprocess.BackendProcessData.getStartTime;
 
 
 public class ClientProcessData implements Runnable {
@@ -143,7 +146,7 @@ public class ClientProcessData implements Runnable {
 
     public static String getWrongTrace(String wrongTraceIdList, int batchPos) {
         List<String> traceIdList = JSON.parseObject(wrongTraceIdList, new TypeReference<List<String>>(){});
-        Map<String,List<String>> wrongTraceMap = new HashMap<>();
+        Map<String,List<Map<Long,String>>> wrongTraceMap = new HashMap<>();
         int pos = batchPos % BATCH_COUNT;
         int previous = pos - 1;
         if (previous == -1) {
@@ -162,18 +165,19 @@ public class ClientProcessData implements Runnable {
         return JSON.toJSONString(wrongTraceMap);
     }
 
-    private static void getWrongTraceWithBatch(int batchPos,  List<String> traceIdList, Map<String,List<String>> wrongTraceMap) {
+    private static void getWrongTraceWithBatch(int batchPos,  List<String> traceIdList, Map<String,List<Map<Long,String>>> wrongTraceMap) {
         // donot lock traceMap,  traceMap may be clear anytime.
         Map<String, List<String>> traceMap = BATCH_TRACE_LIST.get(batchPos);
+        // TODO traceMap为空时就不需要再去找了
         for (String traceId : traceIdList) {
             List<String> spanList = traceMap.get(traceId);
             if (spanList != null) {
                 // one trace may cross to batch (e.g batch size 20000, span1 in line 19999, span2 in line 20001)
-                List<String> existSpanList = wrongTraceMap.get(traceId);
-                if (existSpanList != null) {
-                    existSpanList.addAll(spanList);
-                } else {
-                    wrongTraceMap.put(traceId, spanList);
+                List<Map<Long, String>> existSpanList = wrongTraceMap.computeIfAbsent(traceId, k -> new ArrayList<>());
+                for(String s : spanList){
+                    HashMap<Long, String> map = new HashMap<>();
+                    map.put(getStartTime(s),s);
+                    existSpanList.add(map);
                 }
             }
         }
