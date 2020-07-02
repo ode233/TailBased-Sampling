@@ -11,6 +11,7 @@ public class TraceIdBatch {
 
     private int batchPos = 0;
     private int processCount = 0;
+    private int processId = 0;
     private HashSet<String> traceIdList = new HashSet<>(Constants.BATCH_SIZE / 10);
 
     public int getBatchPos() {
@@ -31,5 +32,13 @@ public class TraceIdBatch {
 
     public HashSet<String> getTraceIdList() {
         return traceIdList;
+    }
+
+    public int getProcessId() {
+        return processId;
+    }
+
+    public void setProcessId(int processId) {
+        this.processId = processId;
     }
 }

@@ -12,7 +12,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
 
 import static com.alibaba.tailbase.Constants.*;
 import static com.alibaba.tailbase.Constants.PROCESS_COUNT;
@@ -21,19 +20,18 @@ public class BackendProcessData implements Runnable{
 
     private static final Logger LOGGER = LoggerFactory.getLogger(BackendController.class.getName());
 
-    private static volatile Integer FINISH_PROCESS_COUNT = 0;
-
-    private static volatile Integer CURRENT_BATCH = 0;
-
     private static int BATCH_COUNT = 90;
 
-    private static List<TraceIdBatch> TRACEID_BATCH_LIST= new ArrayList<>();
+    private static volatile Integer BACKEND_FINISH_PROCESS_COUNT = 0;
+
+    private static List<BackendProcess> BackendProcessLIST = new ArrayList<>();
 
     private static Map<String, String> TRACE_CHECKSUM_MAP= new ConcurrentHashMap<>();
 
-    public static  void init() {
-        for (int i = 0; i < BATCH_COUNT; i++) {
-            TRACEID_BATCH_LIST.add(new TraceIdBatch());
+    public static void init() {
+        for (int i = 0; i < PROCESS_COUNT; i++) {
+            BackendProcess backendProcess = new BackendProcess(i);
+            BackendProcessLIST.add(backendProcess);
         }
     }
 
@@ -43,64 +41,13 @@ public class BackendProcessData implements Runnable{
 
     @Override
     public void run() {
-        TraceIdBatch traceIdBatch = null;
-        String[] ports = new String[]{CLIENT_PROCESS_PORT1, CLIENT_PROCESS_PORT2};
-        while (true) {
-            try {
-                traceIdBatch = getFinishedBatch();
-
-                if (traceIdBatch == null) {
-                    // send checksum when client process has all finished.
-                    if (isFinished()) {
-                        if (sendCheckSum()) {
-                            break;
-                        }
-                    }
-                    continue;
-                }
-                int batchPos = traceIdBatch.getBatchPos();
-                Map<String, List<Map<Long,String>>> processMap1 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[0], batchPos);
-                Map<String, List<Map<Long,String>>> processMap2 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[1], batchPos);
-                if(processMap1 != null){
-                    for(Map.Entry<String, List<Map<Long,String>>> entry : processMap1.entrySet()){
-                        List<Map<Long,String>> list1 = entry.getValue();
-                        List<Map<Long,String>> list2 = new ArrayList<>();
-                        String traceId = entry.getKey();
-                        if(processMap2 != null){
-                            list2 = processMap2.computeIfAbsent(traceId, k -> new ArrayList<>());
-                            processMap2.remove(traceId);
-                        }
-                        TRACE_CHECKSUM_MAP.put(traceId, mergeSort(list1, list2));
-                        LOGGER.info("getWrong:" + batchPos + ", traceIdsize:" + traceIdBatch.getTraceIdList().size());
-                    }
-                }
-                if(processMap2 != null){
-                    for(Map.Entry<String, List<Map<Long,String>>> entry : processMap2.entrySet()){
-                        List<Map<Long,String>> list2 = entry.getValue();
-                        List<Map<Long,String>> list1 = new ArrayList<>();
-                        String traceId = entry.getKey();
-                        if(processMap1 != null){
-                            list1 = processMap1.computeIfAbsent(traceId, k -> new ArrayList<>());
-                            processMap1.remove(traceId);
-                        }
-                        TRACE_CHECKSUM_MAP.put(traceId, mergeSort(list1, list2));
-                        LOGGER.info("getWrong:" + batchPos + ", traceIdsize:" + traceIdBatch.getTraceIdList().size());
-                    }
-                }
-            } catch (Exception e) {
-                // record batchPos when an exception  occurs.
-                int batchPos = 0;
-                if (traceIdBatch != null) {
-                    batchPos = traceIdBatch.getBatchPos();
-                }
-                LOGGER.warn(String.format("fail to getWrongTrace, batchPos:%d", batchPos), e);
-            } finally {
-                if (traceIdBatch == null) {
-                    try {
-                        Thread.sleep(100);
-                    } catch (Throwable e) {
-                        // quiet
-                    }
+        for(int i=0; i<PROCESS_COUNT; i++){
+            new Thread(BackendProcessLIST.get(i)).start();
+        }
+        while (true){
+            if (BACKEND_FINISH_PROCESS_COUNT == 2){
+                if (sendCheckSum()) {
+                    break;
                 }
             }
         }
@@ -113,10 +60,11 @@ public class BackendProcessData implements Runnable{
      * @param batchPos
      * @return
      */
-    private Map<String,List<Map<Long,String>>>  getWrongTrace(@RequestParam String traceIdList, String port, int batchPos) {
+    private static Map<String,List<Map<Long,String>>>  getWrongTrace(@RequestParam String traceIdList, String port, int batchPos, int processId) {
         try {
             RequestBody body = new FormBody.Builder()
-                    .add("traceIdList", traceIdList).add("batchPos", batchPos + "").build();
+                    .add("traceIdList", traceIdList).add("batchPos", batchPos + "")
+                    .add("processId", processId + "").build();
             String url = String.format("http://localhost:%s/getWrongTrace", port);
             Request request = new Request.Builder().url(url).post(body).build();
             Response response = Utils.callHttp(request);
@@ -168,63 +116,77 @@ public class BackendProcessData implements Runnable{
      * trace batch will be finished, when client process has finished.(FINISH_PROCESS_COUNT == PROCESS_COUNT)
      * @return
      */
-    public static boolean isFinished() {
+    public static boolean isFinished(int processID) {
         for (int i = 0; i < BATCH_COUNT; i++) {
-            TraceIdBatch currentBatch = TRACEID_BATCH_LIST.get(i);
+            TraceIdBatch currentBatch = BackendProcessLIST.get(processID).traceIdBatches.get(i);
             if (currentBatch.getBatchPos() != 0) {
                 return false;
             }
         }
-        return FINISH_PROCESS_COUNT >= Constants.PROCESS_COUNT;
+        return BackendProcessLIST.get(processID).FINISH_PROCESS_COUNT >= Constants.PROCESS_COUNT;
     }
 
     /**
      * get finished bath when current and next batch has all finished
      * @return
      */
-    public static TraceIdBatch getFinishedBatch() {
-        int next = CURRENT_BATCH + 1;
+    public static TraceIdBatch getFinishedBatch(int processId) {
+        int current = BackendProcessLIST.get(processId).CURRENT_BATCH;
+        int next = current + 1;
         if (next >= BATCH_COUNT) {
             next = 0;
         }
-        TraceIdBatch nextBatch = TRACEID_BATCH_LIST.get(next);
-        TraceIdBatch currentBatch = TRACEID_BATCH_LIST.get(CURRENT_BATCH);
+        TraceIdBatch nextBatch = BackendProcessLIST.get(processId).traceIdBatches.get(next);
+        TraceIdBatch currentBatch = BackendProcessLIST.get(processId).traceIdBatches.get(current);
 
         // when client process is finished, or then next trace batch is finished. to get checksum for wrong traces.
-        boolean cond1 = FINISH_PROCESS_COUNT >= PROCESS_COUNT && currentBatch.getBatchPos() > 0;
+        boolean cond1 = BackendProcessLIST.get(processId).FINISH_PROCESS_COUNT >= PROCESS_COUNT && currentBatch.getBatchPos() > 0;
         boolean cond2 = currentBatch.getProcessCount() >= PROCESS_COUNT && nextBatch.getProcessCount() >= PROCESS_COUNT;
         if (cond1 || cond2) {
             TraceIdBatch newTraceIdBatch = new TraceIdBatch();
-            TRACEID_BATCH_LIST.set(CURRENT_BATCH, newTraceIdBatch);
-            CURRENT_BATCH = next;
-            return currentBatch;
+            BackendProcessLIST.get(processId).traceIdBatches.set(current, newTraceIdBatch);
+            BackendProcessLIST.get(processId).CURRENT_BATCH = next;
+            if(current != 0){
+                return currentBatch;
+            }
+            else {
+                return null;
+            }
         }
         return null;
     }
 
-    public static String setWrongTraceId(@RequestParam String traceIdListJson, @RequestParam int batchPos) {
+    public static String setWrongTraceId(@RequestParam String traceIdListJson, @RequestParam int batchPos, @RequestParam int processId) {
         int pos = batchPos % BATCH_COUNT;
         List<String> traceIdList = JSON.parseObject(traceIdListJson, new TypeReference<List<String>>() {
         });
         LOGGER.info(String.format("setWrongTraceId had called, batchPos:%d", batchPos));
-        TraceIdBatch traceIdBatch = TRACEID_BATCH_LIST.get(pos);
+        TraceIdBatch traceIdBatch = BackendProcessLIST.get(processId).traceIdBatches.get(pos);
+        TraceIdBatch abandonTraceIdBatch = BackendProcessLIST.get(processId).abandonTraceIdBatch;
 
         // 不能有 traceIdList.size() > 0
         if (traceIdList != null) {
             traceIdBatch.setBatchPos(batchPos);
             traceIdBatch.setProcessCount(traceIdBatch.getProcessCount() + 1);
+            traceIdBatch.setProcessId(processId);
             traceIdBatch.getTraceIdList().addAll(traceIdList);
+            if(batchPos==0){
+                abandonTraceIdBatch.setBatchPos(batchPos);
+                abandonTraceIdBatch.setProcessCount(traceIdBatch.getProcessCount() + 1);
+                abandonTraceIdBatch.setProcessId(processId);
+                abandonTraceIdBatch.getTraceIdList().addAll(traceIdList);
+            }
         }
         return "suc";
     }
 
-    public static String finish() {
-        FINISH_PROCESS_COUNT++;
-        LOGGER.warn("receive call 'finish', count:" + FINISH_PROCESS_COUNT);
+    public static String finish(int processId) {
+        BackendProcessLIST.get(processId).FINISH_PROCESS_COUNT++;
+        LOGGER.warn("receive call 'finish', count:" + BackendProcessLIST.get(processId).FINISH_PROCESS_COUNT);
         return "suc";
     }
 
-    private String mergeSort(List<Map<Long,String>> list1, List<Map<Long,String>> list2){
+    private static String mergeSort(List<Map<Long,String>> list1, List<Map<Long,String>> list2){
         StringBuilder s = new StringBuilder();
         int n1 = list1.size();
         int n2 = list2.size();
@@ -259,5 +221,87 @@ public class BackendProcessData implements Runnable{
 //        LOGGER.info("list2:\n"+list2);
 //        LOGGER.info("wrong trace:\n"+s);
         return Utils.MD5(s.toString());
+    }
+    
+
+    public static class BackendProcess implements Runnable {
+        private int processID;
+        private List<TraceIdBatch> traceIdBatches = new ArrayList<>();
+        private volatile Integer FINISH_PROCESS_COUNT = 0;
+        private volatile Integer CURRENT_BATCH = 0;
+
+        private TraceIdBatch abandonTraceIdBatch = new TraceIdBatch();
+
+        public BackendProcess(int processID){
+            this.processID = processID;
+            for (int j = 0; j < BATCH_COUNT; j++) {
+                traceIdBatches.add(new TraceIdBatch());
+            }
+        }
+
+        @Override
+        public void run() {
+            TraceIdBatch traceIdBatch = null;
+            String[] ports = new String[]{CLIENT_PROCESS_PORT1, CLIENT_PROCESS_PORT2};
+            while (true) {
+                try {
+                    traceIdBatch = getFinishedBatch(processID);
+
+                    if (traceIdBatch == null) {
+                        // send checksum when client process has all finished.
+                        if (isFinished(processID)) {
+                            BACKEND_FINISH_PROCESS_COUNT ++;
+                            break;
+                        }
+                        continue;
+                    }
+                    int batchPos = traceIdBatch.getBatchPos();
+                    int processId = traceIdBatch.getProcessId();
+                    Map<String, List<Map<Long,String>>> processMap1 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[0], batchPos, processId);
+                    Map<String, List<Map<Long,String>>> processMap2 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[1], batchPos, processId);
+                    if(processMap1 != null){
+                        for(Map.Entry<String, List<Map<Long,String>>> entry : processMap1.entrySet()){
+                            List<Map<Long,String>> list1 = entry.getValue();
+                            List<Map<Long,String>> list2 = new ArrayList<>();
+                            String traceId = entry.getKey();
+                            if(processMap2 != null){
+                                list2 = processMap2.computeIfAbsent(traceId, k -> new ArrayList<>());
+                                processMap2.remove(traceId);
+                            }
+                            TRACE_CHECKSUM_MAP.put(traceId, mergeSort(list1, list2));
+                            LOGGER.info("getWrong:" + batchPos + ", traceIdsize:" + traceIdBatch.getTraceIdList().size());
+                        }
+                    }
+                    if(processMap2 != null){
+                        for(Map.Entry<String, List<Map<Long,String>>> entry : processMap2.entrySet()){
+                            List<Map<Long,String>> list2 = entry.getValue();
+                            List<Map<Long,String>> list1 = new ArrayList<>();
+                            String traceId = entry.getKey();
+                            if(processMap1 != null){
+                                list1 = processMap1.computeIfAbsent(traceId, k -> new ArrayList<>());
+                                processMap1.remove(traceId);
+                            }
+                            TRACE_CHECKSUM_MAP.put(traceId, mergeSort(list1, list2));
+                            LOGGER.info("getWrong:" + batchPos + ", traceIdsize:" + traceIdBatch.getTraceIdList().size());
+                        }
+                    }
+                } catch (Exception e) {
+                    // record batchPos when an exception  occurs.
+                    int batchPos = 0;
+                    if (traceIdBatch != null) {
+                        batchPos = traceIdBatch.getBatchPos();
+                    }
+                    LOGGER.warn(String.format("fail to getWrongTrace, batchPos:%d", batchPos), e);
+                } finally {
+                    if (traceIdBatch == null) {
+                        try {
+                            Thread.sleep(100);
+                        } catch (Throwable e) {
+                            // quiet
+                        }
+                    }
+                }
+            }
+        }
     }
 }

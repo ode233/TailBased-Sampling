@@ -7,12 +7,13 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 public class BackendController {
     @RequestMapping("/setWrongTraceId")
-    public String setWrongTraceId(@RequestParam String traceIdListJson, @RequestParam int batchPos) {
-        return BackendProcessData.setWrongTraceId(traceIdListJson, batchPos);
+    public String setWrongTraceId(@RequestParam String traceIdListJson, @RequestParam int batchPos,
+                                  @RequestParam int processId) {
+        return BackendProcessData.setWrongTraceId(traceIdListJson, batchPos, processId);
     }
 
     @RequestMapping("/finish")
-    public String finish() {
-        return BackendProcessData.finish();
+    public String finish(@RequestParam int processId) {
+        return BackendProcessData.finish(processId);
     }
 }
