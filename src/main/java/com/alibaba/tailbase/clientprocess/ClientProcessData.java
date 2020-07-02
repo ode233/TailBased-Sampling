@@ -30,7 +30,7 @@ public class ClientProcessData implements Runnable {
     private static final Logger LOGGER = LoggerFactory.getLogger(ClientProcessData.class.getName());
 
 
-    public static int THREAD_COUNT = 2;
+    public static int THREAD_COUNT = 10;
 
     private static List<UnitDownloader> threadList = new ArrayList<>();
 
@@ -118,17 +118,16 @@ public class ClientProcessData implements Runnable {
     public static String getWrongTrace(String wrongTraceIdList, int batchPos, int threadID) {
         HashSet<String> traceIdList = JSON.parseObject(wrongTraceIdList, new TypeReference<HashSet<String>>(){});
         Map<String,List<Map<Long,String>>> wrongTraceMap = new HashMap<>();
-        int pos = batchPos;
-        int previous = pos - 1;
-        int next = pos + 1;
+        int previous = batchPos - 1;
+        int next = batchPos + 1;
         getWrongTraceWithBatch(previous, traceIdList, wrongTraceMap, threadID);
-        getWrongTraceWithBatch(pos, traceIdList,  wrongTraceMap, threadID);
+        getWrongTraceWithBatch(batchPos, traceIdList,  wrongTraceMap, threadID);
         getWrongTraceWithBatch(next, traceIdList, wrongTraceMap, threadID);
         // to clear spans, don't block client process thread. TODO to use lock/notify
         if(previous > 1){
             threadList.get(threadID).BATCH_TRACE_LIST.remove(previous);
         }
-        LOGGER.info("getWrongTrace, batchPos:" + batchPos);
+        LOGGER.info("getWrongTrace, batchPos:" + batchPos + " thread: "+ threadID);
         for(List<Map<Long,String>> list : wrongTraceMap.values()){
             list.sort(Comparator.comparing(o -> o.entrySet().iterator().next().getKey()));
         }
@@ -247,9 +246,10 @@ public class ClientProcessData implements Runnable {
                         updateWrongTraceId(badTraceIdList, batchPos, threadID, false);
                         badTraceIdList.clear();
                         batchPos++;
-
+                        traceMap = new HashMap<>();
                     }
                 }
+                BATCH_TRACE_LIST.put(batchPos, traceMap);
                 updateWrongTraceId(badTraceIdList, batchPos, threadID, true);
                 bf.close();
                 input.close();

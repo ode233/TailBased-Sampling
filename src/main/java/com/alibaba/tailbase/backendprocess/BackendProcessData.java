@@ -125,6 +125,9 @@ public class BackendProcessData implements Runnable{
      * @return
      */
     public static boolean isFinished(int threadID) {
+        if (BackendTHREADLIST.get(threadID).FINISH_CLIENT_COUNT < Constants.CLIENT_COUNT){
+            return false;
+        }
         Map<Integer, TraceIdBatch> traceIdBatches = BackendTHREADLIST.get(threadID).traceIdBatches;
         for(Map.Entry<Integer, TraceIdBatch> entry :traceIdBatches.entrySet()){
             if (!entry.getValue().isFirst() && !entry.getValue().isLast()){
@@ -132,7 +135,7 @@ public class BackendProcessData implements Runnable{
                 return false;
             }
         }
-        return BackendTHREADLIST.get(threadID).FINISH_CLIENT_COUNT >= Constants.CLIENT_COUNT;
+        return true;
     }
 
     /**
@@ -147,17 +150,23 @@ public class BackendProcessData implements Runnable{
         TraceIdBatch currentBatch = traceIdBatches.get(current);
 
         if(currentBatch == null || nextBatch == null){
-            return null;
+            if (currentBatch != null && currentBatch.isLast() && threadId == THREAD_COUNT - 1) {
+                traceIdBatches.remove(current);
+                BackendTHREADLIST.get(threadId).CURRENT_BATCH = next;
+                LOGGER.info("get last wrong\n" + currentBatch.getTraceIdList());
+                return currentBatch;
+            }
+            else {
+                return null;
+            }
         }
 
         // when client process is finished, or then next trace batch is finished. to get checksum for wrong traces.
-        boolean cond1 = BackendTHREADLIST.get(threadId).FINISH_CLIENT_COUNT >= CLIENT_COUNT && current > 0;
+        boolean cond1 = BackendTHREADLIST.get(threadId).FINISH_CLIENT_COUNT >= CLIENT_COUNT;
         boolean cond2 = currentBatch.getProcessCount() >= CLIENT_COUNT && nextBatch.getProcessCount() >= CLIENT_COUNT;
         if (cond1 || cond2) {
             if(currentBatch.isFirst() && threadId != 0){
-                return null;
-            }
-            else if(currentBatch.isLast() && threadId != THREAD_COUNT - 1){
+                BackendTHREADLIST.get(threadId).CURRENT_BATCH = next;
                 return null;
             }
             else {
@@ -185,7 +194,7 @@ public class BackendProcessData implements Runnable{
             }
             traceIdBatch.setBatchPos(batchPos);
             traceIdBatch.setProcessCount(traceIdBatch.getProcessCount() + 1);
-            traceIdBatch.setProcessId(threadID);
+            traceIdBatch.setThreadId(threadID);
             traceIdBatch.getTraceIdList().addAll(traceIdList);
             if(batchPos==0){
                 traceIdBatch.setFirst(true);
@@ -193,6 +202,7 @@ public class BackendProcessData implements Runnable{
             if(isFinish){
                 traceIdBatch.setLast(true);
             }
+            LOGGER.info("setWrongTraceId " + batchPos +traceIdBatch.isFirst()+traceIdBatch.isLast());
         }
         return "suc";
     }
@@ -273,7 +283,7 @@ public class BackendProcessData implements Runnable{
                         continue;
                     }
                     int batchPos = traceIdBatch.getBatchPos();
-                    int threadID = traceIdBatch.getProcessId();
+                    int threadID = traceIdBatch.getThreadId();
                     Map<String, List<Map<Long,String>>> processMap1 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[0], batchPos, threadID);
                     Map<String, List<Map<Long,String>>> processMap2 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[1], batchPos, threadID);
                     getWrongTraceMD5(processMap1, processMap2);
@@ -351,6 +361,7 @@ public class BackendProcessData implements Runnable{
                     }
                 }
                 map.put(entry.getValue().isFirst(),entry.getValue());
+                LOGGER.info("handelAbandonWrongTrace thread: "+ i + " "+ entry.getValue().isFirst() + " " + entry.getValue().getTraceIdList());
             }
             abandonTraces.put(i,map);
         }

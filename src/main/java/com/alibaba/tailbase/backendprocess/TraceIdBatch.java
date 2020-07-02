@@ -2,16 +2,14 @@ package com.alibaba.tailbase.backendprocess;
 
 import com.alibaba.tailbase.Constants;
 
-import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.List;
 
 public class TraceIdBatch {
     // 对应 Client 的批次
 
     private int batchPos = 0;
     private int processCount = 0;
-    private int processId = 0;
+    private int threadId = 0;
     private boolean isFirst = false;
     private boolean isLast = false;
 
@@ -37,12 +35,12 @@ public class TraceIdBatch {
         return traceIdList;
     }
 
-    public int getProcessId() {
-        return processId;
+    public int getThreadId() {
+        return threadId;
     }
 
-    public void setProcessId(int processId) {
-        this.processId = processId;
+    public void setThreadId(int threadId) {
+        this.threadId = threadId;
     }
 
     public boolean isFirst() {
