@@ -8,12 +8,13 @@ import org.springframework.web.bind.annotation.RestController;
 public class BackendController {
     @RequestMapping("/setWrongTraceId")
     public String setWrongTraceId(@RequestParam String traceIdListJson, @RequestParam int batchPos,
-                                  @RequestParam int processId) {
-        return BackendProcessData.setWrongTraceId(traceIdListJson, batchPos, processId);
+                                  @RequestParam int threadID, @RequestParam boolean isFinish) {
+        return BackendProcessData.setWrongTraceId(traceIdListJson, batchPos, threadID, isFinish);
     }
 
     @RequestMapping("/finish")
-    public String finish(@RequestParam int processId) {
-        return BackendProcessData.finish(processId);
+    public String finish(@RequestParam int threadID, @RequestParam String abandonFirstString,
+                         @RequestParam String abandonLastString) {
+        return BackendProcessData.finish(threadID, abandonFirstString, abandonLastString);
     }
 }

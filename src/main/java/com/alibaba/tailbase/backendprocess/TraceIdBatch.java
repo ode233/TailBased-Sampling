@@ -12,6 +12,9 @@ public class TraceIdBatch {
     private int batchPos = 0;
     private int processCount = 0;
     private int processId = 0;
+    private boolean isFirst = false;
+    private boolean isLast = false;
+
     private HashSet<String> traceIdList = new HashSet<>(Constants.BATCH_SIZE / 10);
 
     public int getBatchPos() {
@@ -40,5 +43,21 @@ public class TraceIdBatch {
 
     public void setProcessId(int processId) {
         this.processId = processId;
+    }
+
+    public boolean isFirst() {
+        return isFirst;
+    }
+
+    public void setFirst(boolean first) {
+        isFirst = first;
+    }
+
+    public boolean isLast() {
+        return isLast;
+    }
+
+    public void setLast(boolean last) {
+        isLast = last;
     }
 }

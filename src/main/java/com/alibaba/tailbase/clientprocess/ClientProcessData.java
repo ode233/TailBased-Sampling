@@ -5,7 +5,7 @@ import com.alibaba.fastjson.TypeReference;
 import com.alibaba.tailbase.CommonController;
 import com.alibaba.tailbase.Constants;
 import com.alibaba.tailbase.Utils;
-import com.alibaba.tailbase.backendprocess.BackendProcessData;
+import com.alibaba.tailbase.backendprocess.TraceIdBatch;
 import okhttp3.FormBody;
 import okhttp3.Request;
 import okhttp3.RequestBody;
@@ -18,13 +18,10 @@ import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
-import java.net.MalformedURLException;
 import java.net.Proxy;
 import java.net.URL;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
-import static com.alibaba.tailbase.Constants.PROCESS_COUNT;
 import static com.alibaba.tailbase.backendprocess.BackendProcessData.getStartTime;
 
 
@@ -33,11 +30,9 @@ public class ClientProcessData implements Runnable {
     private static final Logger LOGGER = LoggerFactory.getLogger(ClientProcessData.class.getName());
 
 
-    private static int BATCH_COUNT = 20;
+    public static int THREAD_COUNT = 2;
 
-    public static int PROCESS_COUNT = 20;
-
-    private static List<UnitDownloader> process = new ArrayList<>();
+    private static List<UnitDownloader> threadList = new ArrayList<>();
 
     private static URL url = null;
 
@@ -47,9 +42,9 @@ public class ClientProcessData implements Runnable {
     }
 
     public static  void init() {
-        for (int i = 0; i < PROCESS_COUNT; i++) {
+        for (int i = 0; i < THREAD_COUNT; i++) {
             UnitDownloader unitDownloader = new UnitDownloader(i);
-            process.add(unitDownloader);
+            threadList.add(unitDownloader);
         }
     }
 
@@ -67,11 +62,11 @@ public class ClientProcessData implements Runnable {
             HttpURLConnection httpConnection = (HttpURLConnection) url.openConnection(Proxy.NO_PROXY);
             long totalSize = httpConnection.getContentLengthLong();
             LOGGER.info("file totalSize: "+ totalSize);
-            long slice = totalSize/PROCESS_COUNT;
-            for (int i = 0; i < PROCESS_COUNT; i++) {
-                process.get(i).from = Math.min(i*slice, totalSize-1);
-                process.get(i).to = Math.min((i+1)*slice, totalSize-1);
-                new Thread(process.get(i)).start();
+            long slice = totalSize/ THREAD_COUNT;
+            for (int i = 0; i < THREAD_COUNT; i++) {
+                threadList.get(i).from = Math.min(i*slice, totalSize-1);
+                threadList.get(i).to = Math.min((i+1)*slice, totalSize-1);
+                new Thread(threadList.get(i)).start();
             }
         } catch (Exception e) {
             e.printStackTrace();
@@ -83,7 +78,7 @@ public class ClientProcessData implements Runnable {
      * @param badTraceIdSet batchPos批次的所有wrongTraceId
      * @param batchPos
      */
-    private static void updateWrongTraceId(Set<String> badTraceIdSet, int batchPos, int processId) {
+    private static void updateWrongTraceId(Set<String> badTraceIdSet, int batchPos, int threadID, Boolean isFinish) {
         String json = JSON.toJSONString(badTraceIdSet);
         // 无论List是否为空都必须发起一次Request，因为Backend需要统计操作次数
         //if (badTraceIdSet.size() > 0) {
@@ -92,7 +87,8 @@ public class ClientProcessData implements Runnable {
                 RequestBody body = new FormBody.Builder()
                         .add("traceIdListJson", json)
                         .add("batchPos", batchPos + "")
-                        .add("processId", processId + "").build();
+                        .add("threadID", threadID + "")
+                        .add("isFinish", isFinish + "").build();
                 Request request = new Request.Builder().url("http://localhost:8002/setWrongTraceId").post(body).build();
                 Response response = Utils.callHttp(request);
                 response.close();
@@ -103,10 +99,13 @@ public class ClientProcessData implements Runnable {
     }
 
     // notify backend process when client process has finished.
-    private static void callFinish(int processId) {
+    private static void callFinish(int threadID, String abandonFirstString,
+                                   String abandonLastString) {
         try {
             RequestBody body = new FormBody.Builder()
-                    .add("processId", processId + "").build();
+                    .add("threadID", threadID + "")
+                    .add("abandonFirstString",abandonFirstString)
+                    .add("abandonLastString",abandonLastString).build();
             Request request = new Request.Builder().url("http://localhost:8002/finish").post(body).build();
             Response response = Utils.callHttp(request);
             response.close();
@@ -116,23 +115,19 @@ public class ClientProcessData implements Runnable {
     }
 
 
-    public static String getWrongTrace(String wrongTraceIdList, int batchPos, int processId) {
+    public static String getWrongTrace(String wrongTraceIdList, int batchPos, int threadID) {
         HashSet<String> traceIdList = JSON.parseObject(wrongTraceIdList, new TypeReference<HashSet<String>>(){});
         Map<String,List<Map<Long,String>>> wrongTraceMap = new HashMap<>();
-        int pos = batchPos % BATCH_COUNT;
+        int pos = batchPos;
         int previous = pos - 1;
-        if (previous == -1) {
-            previous = BATCH_COUNT -1;
-        }
         int next = pos + 1;
-        if (next == BATCH_COUNT) {
-            next = 0;
-        }
-        getWrongTraceWithBatch(previous, traceIdList, wrongTraceMap, processId);
-        getWrongTraceWithBatch(pos, traceIdList,  wrongTraceMap, processId);
-        getWrongTraceWithBatch(next, traceIdList, wrongTraceMap, processId);
+        getWrongTraceWithBatch(previous, traceIdList, wrongTraceMap, threadID);
+        getWrongTraceWithBatch(pos, traceIdList,  wrongTraceMap, threadID);
+        getWrongTraceWithBatch(next, traceIdList, wrongTraceMap, threadID);
         // to clear spans, don't block client process thread. TODO to use lock/notify
-        process.get(processId).BATCH_TRACE_LIST.get(previous).clear();
+        if(previous > 1){
+            threadList.get(threadID).BATCH_TRACE_LIST.remove(previous);
+        }
         LOGGER.info("getWrongTrace, batchPos:" + batchPos);
         for(List<Map<Long,String>> list : wrongTraceMap.values()){
             list.sort(Comparator.comparing(o -> o.entrySet().iterator().next().getKey()));
@@ -142,11 +137,11 @@ public class ClientProcessData implements Runnable {
 
     private static void getWrongTraceWithBatch(int batchPos,  HashSet<String> traceIdList,
                                                Map<String,List<Map<Long,String>>> wrongTraceMap,
-                                               int processId) {
+                                               int threadID) {
         // donot lock traceMap,  traceMap may be clear anytime.
-        Map<String, List<String>> traceMap = process.get(processId).BATCH_TRACE_LIST.get(batchPos);
+        Map<String, List<String>> traceMap = threadList.get(threadID).BATCH_TRACE_LIST.get(batchPos);
         // traceMap为空时就不需要再去找了
-        if(traceMap.size() == 0){
+        if(traceMap == null || traceMap.size() == 0){
             return;
         }
         for (String traceId : traceIdList) {
@@ -197,22 +192,13 @@ public class ClientProcessData implements Runnable {
 
         private long from;
         private long to;
-        private int processId;
+        private int threadID;
         private String abandonFirstString = "";
         private String abandonLastString = "";
-        private List<Map<String,List<String>>> abandonFirstBatchList = new ArrayList<>();
-        private List<Map<String,List<String>>> abandonLastBatchList = new ArrayList<>();
-        private List<Map<String,List<String>>> BATCH_TRACE_LIST = new ArrayList<>();
+        private Map<Integer,Map<String,List<String>>> BATCH_TRACE_LIST = new HashMap<>();
 
-        public UnitDownloader(int processId) {
-            this.processId = processId;
-            for (int i = 0; i < BATCH_COUNT; i++) {
-                BATCH_TRACE_LIST.add(new ConcurrentHashMap<>(Constants.BATCH_SIZE));
-            }
-            for (int i = 0; i < 2; i++) {
-                abandonFirstBatchList.add(new ConcurrentHashMap<>(Constants.BATCH_SIZE));
-                abandonLastBatchList.add(new ConcurrentHashMap<>(Constants.BATCH_SIZE));
-            }
+        public UnitDownloader(int threadID) {
+            this.threadID = threadID;
         }
 
         @Override
@@ -223,18 +209,18 @@ public class ClientProcessData implements Runnable {
                 InputStream input = httpConnection.getInputStream();
                 BufferedReader bf = new BufferedReader(new InputStreamReader(input));
                 long count = 0;
-                int pos = 0;
+                int batchPos = 0;
                 Set<String> badTraceIdList = new HashSet<>(1000);
-                Map<String, List<String>> traceMap = BATCH_TRACE_LIST.get(pos);
-                if(processId !=0){
+                Map<String, List<String>> traceMap = new HashMap<>();
+                if(threadID !=0){
                     abandonFirstString = bf.readLine();
                 }
                 String nextLine = bf.readLine();
 
-                while (true) {
+                while (nextLine != null) {
                     String line = nextLine;
                     nextLine = bf.readLine();
-                    if(nextLine==null){
+                    if(nextLine==null && threadID != THREAD_COUNT - 1){
                         abandonLastString = line;
                         break;
                     }
@@ -256,95 +242,49 @@ public class ClientProcessData implements Runnable {
                         }
                     }
                     if (count % Constants.BATCH_SIZE == 0) {
-                        // batchPos begin from 0, so need to minus 1
-                        int batchPos = (int) count / Constants.BATCH_SIZE - 1;
-                        if((batchPos == 0 || batchPos == 1)){
-                            if(processId != 0){
-                                abandonFirstBatchList.get(batchPos).putAll(traceMap);
-                            }
-                        }
-                        else {
-                            if(processId != PROCESS_COUNT - 1){
-                                abandonLastBatchList.remove(0);
-                                abandonLastBatchList.get(1).putAll(traceMap);
-                            }
-                        }
-                        updateWrongTraceId(badTraceIdList, batchPos, processId);
+                        BATCH_TRACE_LIST.put(batchPos, traceMap);
+                        // TODO 需要判断是不是不是最后一批
+                        updateWrongTraceId(badTraceIdList, batchPos, threadID, false);
                         badTraceIdList.clear();
+                        batchPos++;
 
-                        pos++;
-                        // loop cycle
-                        if (pos >= BATCH_COUNT) {
-                            pos = 0;
-                        }
-                        traceMap = BATCH_TRACE_LIST.get(pos);
-                        // donot produce data, wait backend to consume data
-                        // TODO to use lock/notify
-                        if (traceMap.size() > 0) {
-                            while (true) {
-                                Thread.sleep(10);
-                                if (traceMap.size() == 0) {
-                                    break;
-                                }
-                            }
-                        }
                     }
                 }
-                updateWrongTraceId(badTraceIdList, (int) (count / Constants.BATCH_SIZE - 1), processId);
+                updateWrongTraceId(badTraceIdList, batchPos, threadID, true);
                 bf.close();
                 input.close();
-                callFinish(processId);
+                callFinish(threadID,abandonFirstString,abandonLastString);
             } catch (Exception e) {
                 e.printStackTrace();
             }
         }
     }
 
-    public static String getAbandonWrongTrace(String wrongTraceIdList, int batchPos, int processId) {
-        HashSet<String> traceIdList = JSON.parseObject(wrongTraceIdList, new TypeReference<HashSet<String>>(){});
+    public static String getAbandonWrongTrace(String abandonTraces) {
+        Map<Integer,Map<Boolean,TraceIdBatch>> abandonTraceMap
+                = JSON.parseObject(abandonTraces, new TypeReference<Map<Integer,Map<Boolean,TraceIdBatch>>>(){});
         Map<String,List<Map<Long,String>>> wrongTraceMap = new HashMap<>();
-        int pos = batchPos % BATCH_COUNT;
-        int previous = pos - 1;
-        if (previous == -1) {
-            previous = BATCH_COUNT -1;
+        for(int i = 0; i< THREAD_COUNT; i++){
+            // 处理末尾
+            if (i != THREAD_COUNT -1){
+                TraceIdBatch traceIdBatch = abandonTraceMap.get(i).get(false);
+                getWrongTraceWithBatch(traceIdBatch.getBatchPos()-1, traceIdBatch.getTraceIdList(), wrongTraceMap, i);
+                getWrongTraceWithBatch(traceIdBatch.getBatchPos(), traceIdBatch.getTraceIdList(), wrongTraceMap, i);
+                getWrongTraceWithBatch(0, traceIdBatch.getTraceIdList(), wrongTraceMap, i+1);
+            }
+            // 处理开头
+            if (i !=0){
+                TraceIdBatch traceIdBatch = abandonTraceMap.get(i).get(true);
+                getWrongTraceWithBatch(0, traceIdBatch.getTraceIdList(), wrongTraceMap, i);
+                getWrongTraceWithBatch(1, traceIdBatch.getTraceIdList(), wrongTraceMap, i);
+                getWrongTraceWithBatch(abandonTraceMap.get(i-1).get(false).getBatchPos(), traceIdBatch.getTraceIdList(), wrongTraceMap, i-1);
+            }
         }
-        int next = pos + 1;
-        if (next == BATCH_COUNT) {
-            next = 0;
-        }
-        getWrongTraceWithBatch(previous, traceIdList, wrongTraceMap, processId);
-        getWrongTraceWithBatch(pos, traceIdList,  wrongTraceMap, processId);
-        getWrongTraceWithBatch(next, traceIdList, wrongTraceMap, processId);
-        // to clear spans, don't block client process thread. TODO to use lock/notify
-        process.get(processId).BATCH_TRACE_LIST.get(previous).clear();
-        LOGGER.info("getWrongTrace, batchPos:" + batchPos);
+        LOGGER.info("getAbandonWrongTrace");
         for(List<Map<Long,String>> list : wrongTraceMap.values()){
             list.sort(Comparator.comparing(o -> o.entrySet().iterator().next().getKey()));
         }
         return JSON.toJSONString(wrongTraceMap);
-    }
-
-    private static void getAbandonWrongTraceWithBatch(int batchPos,  HashSet<String> traceIdList,
-                                               Map<String,List<Map<Long,String>>> wrongTraceMap,
-                                               int processId) {
-        // donot lock traceMap,  traceMap may be clear anytime.
-        Map<String, List<String>> traceMap = process.get(processId).BATCH_TRACE_LIST.get(batchPos);
-        // traceMap为空时就不需要再去找了
-        if(traceMap.size() == 0){
-            return;
-        }
-        for (String traceId : traceIdList) {
-            List<String> spanList = traceMap.get(traceId);
-            if (spanList != null) {
-                // one trace may cross to batch (e.g batch size 20000, span1 in line 19999, span2 in line 20001)
-                List<Map<Long, String>> existSpanList = wrongTraceMap.computeIfAbsent(traceId, k -> new ArrayList<>());
-                for(String s : spanList){
-                    HashMap<Long, String> map = new HashMap<>();
-                    map.put(getStartTime(s),s);
-                    existSpanList.add(map);
-                }
-            }
-        }
     }
 
 }
