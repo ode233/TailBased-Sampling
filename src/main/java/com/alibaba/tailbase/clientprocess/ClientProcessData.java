@@ -32,6 +32,10 @@ public class ClientProcessData implements Runnable {
 
     public static int THREAD_COUNT = 10;
 
+    private static final int ALL_CLIENT_CACHE_NUM = 20;
+
+    private static int CLIENT_CACHE_NUM;
+
     private static List<UnitDownloader> threadList = new ArrayList<>();
 
     private static URL url = null;
@@ -45,6 +49,7 @@ public class ClientProcessData implements Runnable {
         for (int i = 0; i < THREAD_COUNT; i++) {
             UnitDownloader unitDownloader = new UnitDownloader(i);
             threadList.add(unitDownloader);
+            CLIENT_CACHE_NUM = ALL_CLIENT_CACHE_NUM / THREAD_COUNT;
         }
     }
 
@@ -247,6 +252,10 @@ public class ClientProcessData implements Runnable {
                         badTraceIdList.clear();
                         batchPos++;
                         traceMap = new HashMap<>();
+                        // TODO to use lock/notify
+                        while (BATCH_TRACE_LIST.size() > CLIENT_CACHE_NUM) {
+                            Thread.sleep(10);
+                        }
                     }
                 }
                 BATCH_TRACE_LIST.put(batchPos, traceMap);

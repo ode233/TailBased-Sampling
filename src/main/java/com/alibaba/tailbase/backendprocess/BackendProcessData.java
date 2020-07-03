@@ -34,10 +34,15 @@ public class BackendProcessData implements Runnable{
 
     private static String[] ports = new String[]{CLIENT_PROCESS_PORT1, CLIENT_PROCESS_PORT2};
 
+    private static final int ALL_SERVER_CACHE_NUM = 90;
+
+    private static int SERVER_CACHE_NUM;
+
     public static void init() {
         for (int i = 0; i < THREAD_COUNT; i++) {
             BackendProcess backendProcess = new BackendProcess(i);
             BackendTHREADLIST.add(backendProcess);
+            SERVER_CACHE_NUM = ALL_SERVER_CACHE_NUM / THREAD_COUNT;
         }
     }
 
@@ -288,6 +293,10 @@ public class BackendProcessData implements Runnable{
                     Map<String, List<Map<Long,String>>> processMap2 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[1], batchPos, threadID);
                     getWrongTraceMD5(processMap1, processMap2);
                     LOGGER.info("getWrong:" + batchPos + ", traceIdsize:" + traceIdBatch.getTraceIdList().size());
+                    // TODO to use lock/notify
+                    while (traceIdBatches.size() > SERVER_CACHE_NUM){
+                        Thread.sleep(10);
+                    }
 
                 } catch (Exception e) {
                     // record batchPos when an exception  occurs.
