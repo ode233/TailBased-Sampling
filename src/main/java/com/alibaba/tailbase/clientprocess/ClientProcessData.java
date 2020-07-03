@@ -50,6 +50,9 @@ public class ClientProcessData implements Runnable {
             UnitDownloader unitDownloader = new UnitDownloader(i);
             threadList.add(unitDownloader);
             CLIENT_CACHE_NUM = ALL_CLIENT_CACHE_NUM / THREAD_COUNT;
+            if(CLIENT_CACHE_NUM <= 4){
+                CLIENT_CACHE_NUM = 7;
+            }
         }
     }
 

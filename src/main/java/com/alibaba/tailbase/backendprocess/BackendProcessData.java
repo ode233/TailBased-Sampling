@@ -43,6 +43,9 @@ public class BackendProcessData implements Runnable{
             BackendProcess backendProcess = new BackendProcess(i);
             BackendTHREADLIST.add(backendProcess);
             SERVER_CACHE_NUM = ALL_SERVER_CACHE_NUM / THREAD_COUNT;
+            if(SERVER_CACHE_NUM <= 2){
+                SERVER_CACHE_NUM = 4;
+            }
         }
     }
 
@@ -158,7 +161,7 @@ public class BackendProcessData implements Runnable{
             if (currentBatch != null && currentBatch.isLast() && threadId == THREAD_COUNT - 1) {
                 traceIdBatches.remove(current);
                 BackendTHREADLIST.get(threadId).CURRENT_BATCH = next;
-                LOGGER.info("get last wrong\n" + currentBatch.getTraceIdList());
+//                LOGGER.info("get last wrong\n" + currentBatch.getTraceIdList());
                 return currentBatch;
             }
             else {
@@ -370,7 +373,7 @@ public class BackendProcessData implements Runnable{
                     }
                 }
                 map.put(entry.getValue().isFirst(),entry.getValue());
-                LOGGER.info("handelAbandonWrongTrace thread: "+ i + " "+ entry.getValue().isFirst() + " " + entry.getValue().getTraceIdList());
+//                LOGGER.info("handelAbandonWrongTrace thread: "+ i + " "+ entry.getValue().isFirst() + " " + entry.getValue().getTraceIdList());
             }
             abandonTraces.put(i,map);
         }
