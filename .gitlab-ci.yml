@@ -5,7 +5,6 @@ build:
   stage: build
   script:
     - mvn clean package
-    - cp -f target/tailbaseSampling-1.0-SNAPSHOT.jar dockerfile/tailbaseSampling-1.0-SNAPSHOT.jar
     - sudo docker build -t registry.tbocii.tk:8000/ody123/java-tail-based-sampling dockerfile/
     - sudo docker push registry.tbocii.tk:8000/ody123/java-tail-based-sampling
   only:
