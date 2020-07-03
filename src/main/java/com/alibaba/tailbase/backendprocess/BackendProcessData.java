@@ -210,7 +210,7 @@ public class BackendProcessData implements Runnable{
             if(isFinish){
                 traceIdBatch.setLast(true);
             }
-            LOGGER.info("setWrongTraceId " + batchPos +traceIdBatch.isFirst()+traceIdBatch.isLast());
+//            LOGGER.info("setWrongTraceId " + batchPos +traceIdBatch.isFirst()+traceIdBatch.isLast());
         }
         return "suc";
     }
