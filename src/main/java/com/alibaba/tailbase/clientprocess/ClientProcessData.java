@@ -13,6 +13,7 @@ import okhttp3.Response;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.util.StringUtils;
+import org.springframework.web.bind.annotation.RequestParam;
 
 import java.io.BufferedReader;
 import java.io.InputStream;
@@ -32,11 +33,12 @@ public class ClientProcessData implements Runnable {
 
     public static int THREAD_COUNT = 10;
 
-    private static final int ALL_CLIENT_CACHE_NUM = 20;
+    private static final int ALL_CLIENT_CACHE_NUM = 60;
 
     private static int CLIENT_CACHE_NUM;
 
-    private static final int CLIENT_CACHE_NUM_MIN = 7;
+    // 第一个线程永久保存尾三批，最后一个线程永久保存首二批，其它线程永久保存首二批、尾三批，至少要有三批的自由空间，计算方法：首部永久保存数+max(尾部永久保存数,最少自由空间)
+    private static final int CLIENT_CACHE_NUM_MIN = 5;
 
     private static List<UnitDownloader> threadList = new ArrayList<>();
 
@@ -74,8 +76,13 @@ public class ClientProcessData implements Runnable {
             LOGGER.info("file totalSize: "+ totalSize);
             long slice = totalSize/ THREAD_COUNT;
             for (int i = 0; i < THREAD_COUNT; i++) {
-                threadList.get(i).from = Math.min(i*slice, totalSize-1);
-                threadList.get(i).to = Math.min((i+1)*slice, totalSize-1);
+                threadList.get(i).from = i*slice;
+                if(i == THREAD_COUNT - 1){
+                    threadList.get(i).to = totalSize - 1;
+                }
+                else {
+                    threadList.get(i).to = (i+1)*slice - 1;
+                }
                 new Thread(threadList.get(i)).start();
             }
         } catch (Exception e) {
@@ -110,12 +117,14 @@ public class ClientProcessData implements Runnable {
 
     // notify backend process when client process has finished.
     private static void callFinish(int threadID, String abandonFirstString,
-                                   String abandonLastString) {
+                                   String abandonLastString, String port) {
         try {
             RequestBody body = new FormBody.Builder()
                     .add("threadID", threadID + "")
                     .add("abandonFirstString",abandonFirstString)
-                    .add("abandonLastString",abandonLastString).build();
+                    .add("abandonLastString",abandonLastString)
+                    .add("port",port)
+                    .build();
             Request request = new Request.Builder().url("http://localhost:8002/finish").post(body).build();
             Response response = Utils.callHttp(request);
             response.close();
@@ -135,7 +144,6 @@ public class ClientProcessData implements Runnable {
         getWrongTraceWithBatch(next, traceIdList, wrongTraceMap, threadID);
         // to clear spans, don't block client process thread. TODO to use lock/notify
         if(previous > 1){
-            threadList.get(threadID).BATCH_TRACE_LIST.get(previous).clear();
             threadList.get(threadID).BATCH_TRACE_LIST.remove(previous);
         }
         LOGGER.info("getWrongTrace, batchPos:" + batchPos + " thread: "+ threadID);
@@ -148,7 +156,7 @@ public class ClientProcessData implements Runnable {
     private static void getWrongTraceWithBatch(int batchPos,  HashSet<String> traceIdList,
                                                Map<String,List<Map<Long,String>>> wrongTraceMap,
                                                int threadID) {
-        // TODO 不只是开头或结束第一批，第二批也要重新考虑，因为第一批可能不足2w条，同时还要考虑拼接的可不可能是属于其中的一个错误Trace
+        // 不只是开头或结束第一批，第二批也要重新考虑，因为第一批可能不足2w条，同时还要考虑拼接的可不可能是属于其中的一个错误Trace
         // donot lock traceMap,  traceMap may be clear anytime.
         Map<String, List<String>> traceMap = threadList.get(threadID).BATCH_TRACE_LIST.get(batchPos);
         // traceMap为空时就不需要再去找了
@@ -180,20 +188,6 @@ public class ClientProcessData implements Runnable {
             return "http://localhost:" + CommonController.getDataSourcePort() + "/trace1.data";
         } else if (Constants.CLIENT_PROCESS_PORT2.equals(port)){
             return "http://localhost:" + CommonController.getDataSourcePort() + "/trace2.data";
-        } else {
-            return null;
-        }
-    }
-
-    /**
-     *  Client的数据源，用于本地测试。将trace1.data和trace2.data置于文件服务器根目录下。
-     */
-    private String getPathNative(){
-        String port = System.getProperty("server.port", "8080");
-        if ("8000".equals(port)) {
-            return "http://localhost:8888/trace1.data";
-        } else if ("8001".equals(port)){
-            return "http://localhost:8888/trace2.data";
         } else {
             return null;
         }
@@ -269,31 +263,58 @@ public class ClientProcessData implements Runnable {
                 updateWrongTraceId(badTraceIdList, batchPos, threadID, true);
                 bf.close();
                 input.close();
-                callFinish(threadID,abandonFirstString,abandonLastString);
+                callFinish(threadID,abandonFirstString,abandonLastString,System.getProperty("server.port", "8080"));
             } catch (Exception e) {
                 e.printStackTrace();
             }
         }
     }
 
-    public static String getAbandonWrongTrace(String abandonTraces) {
-        Map<Integer,Map<Boolean,TraceIdBatch>> abandonTraceMap
-                = JSON.parseObject(abandonTraces, new TypeReference<Map<Integer,Map<Boolean,TraceIdBatch>>>(){});
+    public static String getAbandonWrongTrace(String abandonTracesJson, String allClientConcatTraceJson) {
+        Map<Integer,Map<Integer,TraceIdBatch>> abandonTraces
+                = JSON.parseObject(abandonTracesJson, new TypeReference<Map<Integer,Map<Integer,TraceIdBatch>>>(){});
+        Map<Integer,Map<String,List<String>>> allClientConcatTrace =
+                JSON.parseObject(allClientConcatTraceJson, new TypeReference<Map<Integer,Map<String,List<String>>>>(){});
         Map<String,List<Map<Long,String>>> wrongTraceMap = new HashMap<>();
+
+        // 先补全缺失的trace
         for(int i = 0; i< THREAD_COUNT; i++){
-            // 处理末尾
             if (i != THREAD_COUNT -1){
-                TraceIdBatch traceIdBatch = abandonTraceMap.get(i).get(false);
+                TraceIdBatch traceIdBatch = abandonTraces.get(i).get(2);
+                Map<String,List<String>> clientConcatTrace = allClientConcatTrace.get(i);
+                LOGGER.info("isLast:" + traceIdBatch.isLast() +
+                        "getBatchPos:" + traceIdBatch.getBatchPos() + "THREAD_COUNT:" + i);
+                LOGGER.info(String.valueOf(clientConcatTrace));
+                for(Map.Entry<String,List<String>> entry: clientConcatTrace.entrySet()){
+                    threadList.get(i).BATCH_TRACE_LIST
+                            .get(traceIdBatch.getBatchPos())
+                            .computeIfAbsent(entry.getKey(), k -> new ArrayList<>()).addAll(entry.getValue());
+                }
+            }
+        }
+        for(int i = 0; i< THREAD_COUNT; i++){
+            // 处理开头第一批
+            if (i !=0){
+                TraceIdBatch traceIdBatch = abandonTraces.get(i).get(0);
+                getWrongTraceWithBatch(abandonTraces.get(i-1).get(2).getBatchPos() - 1, traceIdBatch.getTraceIdList(), wrongTraceMap, i-1);
+                getWrongTraceWithBatch(abandonTraces.get(i-1).get(2).getBatchPos(), traceIdBatch.getTraceIdList(), wrongTraceMap, i-1);
+                getWrongTraceWithBatch(0, traceIdBatch.getTraceIdList(), wrongTraceMap, i);
+                getWrongTraceWithBatch(1, traceIdBatch.getTraceIdList(), wrongTraceMap, i);
+            }
+            // 处理末尾第一批
+            if (i != THREAD_COUNT -1){
+                TraceIdBatch traceIdBatch = abandonTraces.get(i).get(2);
                 getWrongTraceWithBatch(traceIdBatch.getBatchPos()-1, traceIdBatch.getTraceIdList(), wrongTraceMap, i);
                 getWrongTraceWithBatch(traceIdBatch.getBatchPos(), traceIdBatch.getTraceIdList(), wrongTraceMap, i);
                 getWrongTraceWithBatch(0, traceIdBatch.getTraceIdList(), wrongTraceMap, i+1);
             }
-            // 处理开头
-            if (i !=0){
-                TraceIdBatch traceIdBatch = abandonTraceMap.get(i).get(true);
-                getWrongTraceWithBatch(0, traceIdBatch.getTraceIdList(), wrongTraceMap, i);
-                getWrongTraceWithBatch(1, traceIdBatch.getTraceIdList(), wrongTraceMap, i);
-                getWrongTraceWithBatch(abandonTraceMap.get(i-1).get(false).getBatchPos(), traceIdBatch.getTraceIdList(), wrongTraceMap, i-1);
+            // 处理末尾第二批
+            if (i != THREAD_COUNT -1){
+                TraceIdBatch traceIdBatch = abandonTraces.get(i).get(1);
+                getWrongTraceWithBatch(traceIdBatch.getBatchPos()-1, traceIdBatch.getTraceIdList(), wrongTraceMap, i);
+                getWrongTraceWithBatch(traceIdBatch.getBatchPos(), traceIdBatch.getTraceIdList(), wrongTraceMap, i);
+                getWrongTraceWithBatch(traceIdBatch.getBatchPos()+1, traceIdBatch.getTraceIdList(), wrongTraceMap, i);
+                getWrongTraceWithBatch(0, traceIdBatch.getTraceIdList(), wrongTraceMap, i+1);
             }
         }
         LOGGER.info("getAbandonWrongTrace");

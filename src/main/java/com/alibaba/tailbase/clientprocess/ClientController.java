@@ -14,7 +14,7 @@ public class ClientController {
     }
 
     @RequestMapping("/getAbandonWrongTrace")
-    public String getAbandonWrongTrace(@RequestParam String abandonTraces) {
-        return ClientProcessData.getAbandonWrongTrace(abandonTraces);
+    public String getAbandonWrongTrace(@RequestParam String abandonTraces, @RequestParam String allClientConcatTrace) {
+        return ClientProcessData.getAbandonWrongTrace(abandonTraces, allClientConcatTrace);
     }
 }

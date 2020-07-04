@@ -14,7 +14,7 @@ public class BackendController {
 
     @RequestMapping("/finish")
     public String finish(@RequestParam int threadID, @RequestParam String abandonFirstString,
-                         @RequestParam String abandonLastString) {
-        return BackendProcessData.finish(threadID, abandonFirstString, abandonLastString);
+                         @RequestParam String abandonLastString, @RequestParam String port) {
+        return BackendProcessData.finish(threadID, abandonFirstString, abandonLastString, port);
     }
 }

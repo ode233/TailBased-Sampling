@@ -13,10 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.RequestParam;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static com.alibaba.tailbase.Constants.*;
@@ -38,6 +35,7 @@ public class BackendProcessData implements Runnable{
 
     private static int SERVER_CACHE_NUM;
 
+    // 第一个线程永久保存尾两批，最后一个线程永久保存首一批，其它线程永久保存首一批、尾两批,至少要有1批的空间，计算方法：首部永久保存数+max(尾部永久保存数,最少自由空间)
     private static final int SERVER_CACHE_NUM_MIN = 3;
 
     public static void init() {
@@ -139,13 +137,16 @@ public class BackendProcessData implements Runnable{
             return false;
         }
         Map<Integer, TraceIdBatch> traceIdBatches = BackendTHREADLIST.get(threadID).traceIdBatches;
-        for(Map.Entry<Integer, TraceIdBatch> entry :traceIdBatches.entrySet()){
-            if (!entry.getValue().isFirst() && !entry.getValue().isLast()){
-                LOGGER.info(String.valueOf(entry.getKey()));
-                return false;
-            }
+        // 第一个线程永久保存尾两批，最后一个线程永久保存首一批，其它线程永久保存首一批、尾两批
+        if(threadID == 0){
+            return traceIdBatches.size() == 2;
         }
-        return true;
+        else if (threadID == THREAD_COUNT - 1){
+            return traceIdBatches.size() == 1;
+        }
+        else {
+            return traceIdBatches.size() == 3;
+        }
     }
 
     /**
@@ -163,7 +164,6 @@ public class BackendProcessData implements Runnable{
             if (currentBatch != null && currentBatch.isLast() && threadId == THREAD_COUNT - 1) {
                 traceIdBatches.remove(current);
                 BackendTHREADLIST.get(threadId).CURRENT_BATCH = next;
-//                LOGGER.info("get last wrong\n" + currentBatch.getTraceIdList());
                 return currentBatch;
             }
             else {
@@ -171,14 +171,18 @@ public class BackendProcessData implements Runnable{
             }
         }
 
-        LOGGER.info("getFinishedBatch " + nextBatch.getThreadId() + "count:"+ nextBatch.getProcessCount());
-        LOGGER.info("getFinishedBatch " + currentBatch.getThreadId() + "count:"+ currentBatch.getProcessCount());
+        LOGGER.info("getFinishedBatch " + nextBatch.getBatchPos() + "count:"+ nextBatch.getProcessCount());
+        LOGGER.info("getFinishedBatch " + currentBatch.getBatchPos() + "count:"+ currentBatch.getProcessCount());
 
         // when client process is finished, or then next trace batch is finished. to get checksum for wrong traces.
         boolean cond1 = BackendTHREADLIST.get(threadId).FINISH_CLIENT_COUNT >= CLIENT_COUNT;
         boolean cond2 = currentBatch.getProcessCount() >= CLIENT_COUNT && nextBatch.getProcessCount() >= CLIENT_COUNT;
         if (cond1 || cond2) {
-            if(currentBatch.isFirst() && threadId != 0){
+            if((current == 0) && threadId != 0){
+                BackendTHREADLIST.get(threadId).CURRENT_BATCH = next;
+                return null;
+            }
+            if(nextBatch.isLast() && threadId != THREAD_COUNT - 1){
                 BackendTHREADLIST.get(threadId).CURRENT_BATCH = next;
                 return null;
             }
@@ -196,9 +200,18 @@ public class BackendProcessData implements Runnable{
         List<String> traceIdList = JSON.parseObject(traceIdListJson, new TypeReference<List<String>>() {
         });
         LOGGER.info(String.format("setWrongTraceId had called, batchPos:%d", batchPos));
-        int pos = batchPos % SERVER_CACHE_NUM;
         Map<Integer, TraceIdBatch> traceIdBatches = BackendTHREADLIST.get(threadID).traceIdBatches;
         TraceIdBatch traceIdBatch = traceIdBatches.get(batchPos);
+
+        // TODO to use lock/notify
+        while (traceIdBatches.size() >= SERVER_CACHE_NUM){
+            LOGGER.info(String.valueOf(traceIdBatches.size()));
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
 
         // 不能有 traceIdList.size() > 0
         if (traceIdList != null) {
@@ -207,24 +220,26 @@ public class BackendProcessData implements Runnable{
                 traceIdBatches.put(batchPos, traceIdBatch);
             }
             traceIdBatch.setBatchPos(batchPos);
-            traceIdBatch.setThreadId(threadID);
             traceIdBatch.getTraceIdList().addAll(traceIdList);
             traceIdBatch.setProcessCount(traceIdBatch.getProcessCount() + 1);
-            if(batchPos==0){
-                traceIdBatch.setFirst(true);
-            }
             if(isFinish){
                 traceIdBatch.setLast(true);
             }
-            LOGGER.info("setWrongTraceId " + batchPos +traceIdBatch.isFirst()+traceIdBatch.isLast());
+            LOGGER.info("setWrongTraceId " + batchPos + traceIdBatch.isLast());
         }
         return "suc";
     }
 
-    public synchronized static String finish(int threadID, String abandonFirstString, String abandonLastString) {
+    public synchronized static String finish(int threadID, String abandonFirstString, String abandonLastString, String port) {
         BackendTHREADLIST.get(threadID).FINISH_CLIENT_COUNT++;
-        BackendTHREADLIST.get(threadID).abandonFirstString = abandonFirstString;
-        BackendTHREADLIST.get(threadID).abandonLastString = abandonLastString;
+        if (Constants.CLIENT_PROCESS_PORT1.equals(port)) {
+            BackendTHREADLIST.get(threadID).client1AbandonFirstString = abandonFirstString;
+            BackendTHREADLIST.get(threadID).client1AbandonLastString = abandonLastString;
+        }
+        else if (Constants.CLIENT_PROCESS_PORT2.equals(port)) {
+            BackendTHREADLIST.get(threadID).client2AbandonFirstString = abandonFirstString;
+            BackendTHREADLIST.get(threadID).client2AbandonLastString = abandonLastString;
+        }
         LOGGER.warn("receive call 'finish', count:" + BackendTHREADLIST.get(threadID).FINISH_CLIENT_COUNT);
         return "suc";
     }
@@ -273,8 +288,11 @@ public class BackendProcessData implements Runnable{
         private volatile Integer FINISH_CLIENT_COUNT = 0;
         private volatile Integer CURRENT_BATCH = 0;
 
-        private String abandonFirstString = "";
-        private String abandonLastString = "";
+        private String client1AbandonFirstString = "";
+        private String client1AbandonLastString = "";
+
+        private String client2AbandonFirstString = "";
+        private String client2AbandonLastString = "";
 
 
         public BackendProcess(int threadID){
@@ -298,16 +316,10 @@ public class BackendProcessData implements Runnable{
                         continue;
                     }
                     int batchPos = traceIdBatch.getBatchPos();
-                    int threadID = traceIdBatch.getThreadId();
                     Map<String, List<Map<Long,String>>> processMap1 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[0], batchPos, threadID);
                     Map<String, List<Map<Long,String>>> processMap2 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[1], batchPos, threadID);
                     getWrongTraceMD5(processMap1, processMap2);
                     LOGGER.info("getWrong:" + batchPos + ", traceIdsize:" + traceIdBatch.getTraceIdList().size());
-                    // TODO to use lock/notify
-                    while (traceIdBatches.size() >= SERVER_CACHE_NUM){
-                        LOGGER.info(String.valueOf(traceIdBatches.size()));
-                        Thread.sleep(1000);
-                    }
 
                 } catch (Exception e) {
                     // record batchPos when an exception  occurs.
@@ -357,68 +369,107 @@ public class BackendProcessData implements Runnable{
     }
 
     private static void handelAbandonWrongTrace(){
-        Map<Integer,Map<Boolean,TraceIdBatch>> abandonTraces = new HashMap<>();
+        // <进程号,<批次位置,批次数据>>  0 第一批，2最后一批，1最后第二批
+        Map<Integer,Map<Integer,TraceIdBatch>> abandonWrongTraces = new HashMap<>();
+
+        // <进程号,<,>>
+        Map<Integer,Map<String,List<String>>> allClient1ConcatTrace = new HashMap<>();
+        Map<Integer,Map<String,List<String>>> allClient2ConcatTrace = new HashMap<>();
+
         for(int i = 0; i< THREAD_COUNT; i++){
-            Map<Boolean,TraceIdBatch> map = new HashMap<>();
+            Map<Integer,TraceIdBatch> batchWrongTrace = new HashMap<>();
             for(Map.Entry<Integer, TraceIdBatch> entry: BackendTHREADLIST.get(i).traceIdBatches.entrySet()){
-                if(i != THREAD_COUNT - 1 && !entry.getValue().isFirst()){
-                    // 虑正好读一行的情况，也就是说是两个完整的trace
-                    String[] colsLast = BackendTHREADLIST.get(i).abandonLastString.split("\\|");
-                    String[] colsFirst = BackendTHREADLIST.get(i + 1).abandonFirstString.split("\\|");
-                    if (colsLast.length > 8){
-                        String traceId = colsLast[0];
-                        String tags = colsLast[8];
-                        if (tags != null) {
-                            if (tags.contains("error=1")) {
-                                entry.getValue().getTraceIdList().add(traceId);
-                            } else if (tags.contains("http.status_code=") && !tags.contains("http.status_code=200")) {
-                                entry.getValue().getTraceIdList().add(traceId);
-                            }
-                        }
-                    }
-                    if (colsFirst.length > 8){
-                        String traceId = colsLast[0];
-                        String tags = colsLast[8];
-                        if (tags != null) {
-                            if (tags.contains("error=1")) {
-                                entry.getValue().getTraceIdList().add(traceId);
-                            } else if (tags.contains("http.status_code=") && !tags.contains("http.status_code=200")) {
-                                entry.getValue().getTraceIdList().add(traceId);
-                            }
-                        }
-                    }
-                    if (colsFirst.length < 8 && colsLast.length < 8){
-                        String s = BackendTHREADLIST.get(i).abandonLastString +
-                                BackendTHREADLIST.get(i + 1).abandonFirstString;
-                        String[] cols = s.split("\\|");
-                        if (cols.length > 8) {
-                            String traceId = cols[0];
-                            String tags = cols[8];
-                            if (tags != null) {
-                                if (tags.contains("error=1")) {
-                                    entry.getValue().getTraceIdList().add(traceId);
-                                } else if (tags.contains("http.status_code=") && !tags.contains("http.status_code=200")) {
-                                    entry.getValue().getTraceIdList().add(traceId);
-                                }
-                            }
-                        }
-                    }
+                int key;
+                if (entry.getValue().getBatchPos() == 0){
+                    key = 0;
                 }
-                map.put(entry.getValue().isFirst(),entry.getValue());
+                else if (entry.getValue().isLast()){
+                    key = 2;
+                }
+                else {
+                    key = 1;
+                }
+                batchWrongTrace.put(key,entry.getValue());
 //                LOGGER.info("handelAbandonWrongTrace thread: "+ i + " "+ entry.getValue().isFirst() + " " + entry.getValue().getTraceIdList());
             }
-            abandonTraces.put(i,map);
+            if(i != THREAD_COUNT - 1){
+                // 虑正好读一行的情况，也就是说是两个完整的trace
+                allClient1ConcatTrace.put(i, concatLastTrace(BackendTHREADLIST.get(i).client1AbandonLastString,
+                        BackendTHREADLIST.get(i + 1).client1AbandonFirstString,batchWrongTrace.get(2).getTraceIdList()));
+                allClient2ConcatTrace.put(i, concatLastTrace(BackendTHREADLIST.get(i).client2AbandonLastString,
+                        BackendTHREADLIST.get(i + 1).client2AbandonFirstString,batchWrongTrace.get(2).getTraceIdList()));
+
+            }
+            abandonWrongTraces.put(i,batchWrongTrace);
         }
-        Map<String, List<Map<Long,String>>> processMap1 = getAbandonWrongTrace(JSON.toJSONString(abandonTraces), ports[0]);
-        Map<String, List<Map<Long,String>>> processMap2 = getAbandonWrongTrace(JSON.toJSONString(abandonTraces), ports[1]);
+        Map<String, List<Map<Long,String>>> processMap1 = getAbandonWrongTrace(JSON.toJSONString(abandonWrongTraces), ports[0], JSON.toJSONString(allClient1ConcatTrace));
+        Map<String, List<Map<Long,String>>> processMap2 = getAbandonWrongTrace(JSON.toJSONString(abandonWrongTraces), ports[1], JSON.toJSONString(allClient2ConcatTrace));
         getWrongTraceMD5(processMap1, processMap2);
         LOGGER.info("finish handelAbandonWrongTrace");
     }
 
-    private static Map<String,List<Map<Long,String>>> getAbandonWrongTrace(@RequestParam String abandonTraces, String port) {
+    private static Map<String, List<String>> concatLastTrace(String nowBatchAbandonLastString, String nextBatchAbandonFirstString, HashSet<String>  traceIdList){
+        String s = nowBatchAbandonLastString + nextBatchAbandonFirstString;
+        String[] cols = s.split("\\|");
+        Map<String, List<String>> map = new HashMap<>();
+        if (cols.length < 10){
+            if (cols.length > 1) {
+                String traceId = cols[0];
+                // 添加缺失的trace
+                map.computeIfAbsent(traceId, k -> new ArrayList<>()).add(s);
+                if (cols.length > 8) {
+                    String tags = cols[8];
+                    if (tags != null) {
+                        if (tags.contains("error=1")) {
+                            traceIdList.add(traceId);
+                        } else if (tags.contains("http.status_code=") && !tags.contains("http.status_code=200")) {
+                            traceIdList.add(traceId);
+                        }
+                    }
+                }
+            }
+        }
+        else {
+            String[] nowBatchColsLast = nowBatchAbandonLastString.split("\\|");
+            String[] nextBatchColsFirst = nextBatchAbandonFirstString.split("\\|");
+            // 添加缺失的trace
+            if (nowBatchColsLast.length > 1) {
+                String traceId = nowBatchColsLast[0];
+                map.computeIfAbsent(traceId, k -> new ArrayList<>()).add(nowBatchAbandonLastString);
+                if (nowBatchColsLast.length > 8) {
+                    String tags = nowBatchColsLast[8];
+                    if (tags != null) {
+                        if (tags.contains("error=1")) {
+                            traceIdList.add(traceId);
+                        } else if (tags.contains("http.status_code=") && !tags.contains("http.status_code=200")) {
+                            traceIdList.add(traceId);
+                        }
+                    }
+                }
+            }
+            if (nextBatchColsFirst.length > 1) {
+                String traceId = nextBatchColsFirst[0];
+                map.computeIfAbsent(traceId, k -> new ArrayList<>()).add(nextBatchAbandonFirstString);
+                if (nextBatchColsFirst.length > 8) {
+                    String tags = nextBatchColsFirst[8];
+                    if (tags != null) {
+                        if (tags.contains("error=1")) {
+                            traceIdList.add(traceId);
+                        } else if (tags.contains("http.status_code=") && !tags.contains("http.status_code=200")) {
+                            traceIdList.add(traceId);
+                        }
+                    }
+                }
+            }
+        }
+        return map;
+    }
+
+    private static Map<String,List<Map<Long,String>>> getAbandonWrongTrace(@RequestParam String abandonTraces, String port, String allClientConcatTrace) {
         try {
             RequestBody body = new FormBody.Builder()
-                    .add("abandonTraces", abandonTraces).build();
+                    .add("abandonTraces", abandonTraces)
+                    .add("allClientConcatTrace", allClientConcatTrace).build();
             String url = String.format("http://localhost:%s/getAbandonWrongTrace", port);
             Request request = new Request.Builder().url(url).post(body).build();
             Response response = Utils.callHttp(request);
