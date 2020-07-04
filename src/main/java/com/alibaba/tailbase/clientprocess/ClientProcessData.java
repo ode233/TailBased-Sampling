@@ -13,7 +13,6 @@ import okhttp3.Response;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.util.StringUtils;
-import org.springframework.web.bind.annotation.RequestParam;
 
 import java.io.BufferedReader;
 import java.io.InputStream;
@@ -31,9 +30,9 @@ public class ClientProcessData implements Runnable {
     private static final Logger LOGGER = LoggerFactory.getLogger(ClientProcessData.class.getName());
 
 
-    public static int THREAD_COUNT = 10;
+    public static int THREAD_COUNT = 4;
 
-    private static final int ALL_CLIENT_CACHE_NUM = 60;
+    private static final int ALL_CLIENT_CACHE_NUM = 40;
 
     private static int CLIENT_CACHE_NUM;
 
@@ -254,8 +253,8 @@ public class ClientProcessData implements Runnable {
                         traceMap = new HashMap<>();
                         // TODO to use lock/notify
                         while (BATCH_TRACE_LIST.size() >= CLIENT_CACHE_NUM) {
-                            LOGGER.info(String.valueOf(BATCH_TRACE_LIST.size()));
-                            Thread.sleep(1000);
+//                            LOGGER.info(String.valueOf(BATCH_TRACE_LIST.size()));
+                            Thread.sleep(10);
                         }
                     }
                 }
@@ -282,9 +281,9 @@ public class ClientProcessData implements Runnable {
             if (i != THREAD_COUNT -1){
                 TraceIdBatch traceIdBatch = abandonTraces.get(i).get(2);
                 Map<String,List<String>> clientConcatTrace = allClientConcatTrace.get(i);
-                LOGGER.info("isLast:" + traceIdBatch.isLast() +
-                        "getBatchPos:" + traceIdBatch.getBatchPos() + "THREAD_COUNT:" + i);
-                LOGGER.info(String.valueOf(clientConcatTrace));
+//                LOGGER.info("isLast:" + traceIdBatch.isLast() +
+//                        "getBatchPos:" + traceIdBatch.getBatchPos() + "THREAD_COUNT:" + i);
+//                LOGGER.info(String.valueOf(clientConcatTrace));
                 for(Map.Entry<String,List<String>> entry: clientConcatTrace.entrySet()){
                     threadList.get(i).BATCH_TRACE_LIST
                             .get(traceIdBatch.getBatchPos())

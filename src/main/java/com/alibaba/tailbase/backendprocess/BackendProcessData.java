@@ -31,7 +31,7 @@ public class BackendProcessData implements Runnable{
 
     private static String[] ports = new String[]{CLIENT_PROCESS_PORT1, CLIENT_PROCESS_PORT2};
 
-    private static final int ALL_SERVER_CACHE_NUM = 90;
+    private static final int ALL_SERVER_CACHE_NUM = 360;
 
     private static int SERVER_CACHE_NUM;
 
@@ -139,13 +139,13 @@ public class BackendProcessData implements Runnable{
         Map<Integer, TraceIdBatch> traceIdBatches = BackendTHREADLIST.get(threadID).traceIdBatches;
         // 第一个线程永久保存尾两批，最后一个线程永久保存首一批，其它线程永久保存首一批、尾两批
         if(threadID == 0){
-            return traceIdBatches.size() == 2;
+            return traceIdBatches.size() <= 2;
         }
         else if (threadID == THREAD_COUNT - 1){
-            return traceIdBatches.size() == 1;
+            return traceIdBatches.size() <= 1;
         }
         else {
-            return traceIdBatches.size() == 3;
+            return traceIdBatches.size() <= 3;
         }
     }
 
@@ -171,8 +171,8 @@ public class BackendProcessData implements Runnable{
             }
         }
 
-        LOGGER.info("getFinishedBatch " + nextBatch.getBatchPos() + "count:"+ nextBatch.getProcessCount());
-        LOGGER.info("getFinishedBatch " + currentBatch.getBatchPos() + "count:"+ currentBatch.getProcessCount());
+//        LOGGER.info("getFinishedBatch " + nextBatch.getBatchPos() + "count:"+ nextBatch.getProcessCount());
+//        LOGGER.info("getFinishedBatch " + currentBatch.getBatchPos() + "count:"+ currentBatch.getProcessCount());
 
         // when client process is finished, or then next trace batch is finished. to get checksum for wrong traces.
         boolean cond1 = BackendTHREADLIST.get(threadId).FINISH_CLIENT_COUNT >= CLIENT_COUNT;
@@ -205,9 +205,9 @@ public class BackendProcessData implements Runnable{
 
         // TODO to use lock/notify
         while (traceIdBatches.size() >= SERVER_CACHE_NUM){
-            LOGGER.info(String.valueOf(traceIdBatches.size()));
+//            LOGGER.info(String.valueOf(traceIdBatches.size()));
             try {
-                Thread.sleep(1000);
+                Thread.sleep(10);
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
@@ -307,7 +307,7 @@ public class BackendProcessData implements Runnable{
                     traceIdBatch = getFinishedBatch(threadID);
 
                     if (traceIdBatch == null) {
-                        LOGGER.info("traceIdBatch is null");
+//                        LOGGER.info("traceIdBatch is null");
                         // send checksum when client process has all finished.
                         if (isFinished(threadID)) {
                             BACKEND_FINISH_THREAD_COUNT++;
@@ -319,7 +319,7 @@ public class BackendProcessData implements Runnable{
                     Map<String, List<Map<Long,String>>> processMap1 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[0], batchPos, threadID);
                     Map<String, List<Map<Long,String>>> processMap2 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[1], batchPos, threadID);
                     getWrongTraceMD5(processMap1, processMap2);
-                    LOGGER.info("getWrong:" + batchPos + ", traceIdsize:" + traceIdBatch.getTraceIdList().size());
+                    LOGGER.info("getWrong:" + batchPos);
 
                 } catch (Exception e) {
                     // record batchPos when an exception  occurs.
