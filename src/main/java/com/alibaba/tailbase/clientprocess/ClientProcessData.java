@@ -36,6 +36,8 @@ public class ClientProcessData implements Runnable {
 
     private static int CLIENT_CACHE_NUM;
 
+    private static final int CLIENT_CACHE_NUM_MIN = 7;
+
     private static List<UnitDownloader> threadList = new ArrayList<>();
 
     private static URL url = null;
@@ -50,8 +52,8 @@ public class ClientProcessData implements Runnable {
             UnitDownloader unitDownloader = new UnitDownloader(i);
             threadList.add(unitDownloader);
             CLIENT_CACHE_NUM = ALL_CLIENT_CACHE_NUM / THREAD_COUNT;
-            if(CLIENT_CACHE_NUM <= 4){
-                CLIENT_CACHE_NUM = 7;
+            if(CLIENT_CACHE_NUM < CLIENT_CACHE_NUM_MIN){
+                CLIENT_CACHE_NUM = CLIENT_CACHE_NUM_MIN;
             }
         }
     }
@@ -133,6 +135,7 @@ public class ClientProcessData implements Runnable {
         getWrongTraceWithBatch(next, traceIdList, wrongTraceMap, threadID);
         // to clear spans, don't block client process thread. TODO to use lock/notify
         if(previous > 1){
+            threadList.get(threadID).BATCH_TRACE_LIST.get(previous).clear();
             threadList.get(threadID).BATCH_TRACE_LIST.remove(previous);
         }
         LOGGER.info("getWrongTrace, batchPos:" + batchPos + " thread: "+ threadID);
@@ -145,6 +148,7 @@ public class ClientProcessData implements Runnable {
     private static void getWrongTraceWithBatch(int batchPos,  HashSet<String> traceIdList,
                                                Map<String,List<Map<Long,String>>> wrongTraceMap,
                                                int threadID) {
+        // TODO 不只是开头或结束第一批，第二批也要重新考虑，因为第一批可能不足2w条，同时还要考虑拼接的可不可能是属于其中的一个错误Trace
         // donot lock traceMap,  traceMap may be clear anytime.
         Map<String, List<String>> traceMap = threadList.get(threadID).BATCH_TRACE_LIST.get(batchPos);
         // traceMap为空时就不需要再去找了
@@ -250,14 +254,14 @@ public class ClientProcessData implements Runnable {
                     }
                     if (count % Constants.BATCH_SIZE == 0) {
                         BATCH_TRACE_LIST.put(batchPos, traceMap);
-                        // TODO 需要判断是不是不是最后一批
                         updateWrongTraceId(badTraceIdList, batchPos, threadID, false);
                         badTraceIdList.clear();
                         batchPos++;
                         traceMap = new HashMap<>();
                         // TODO to use lock/notify
-                        while (BATCH_TRACE_LIST.size() > CLIENT_CACHE_NUM) {
-                            Thread.sleep(10);
+                        while (BATCH_TRACE_LIST.size() >= CLIENT_CACHE_NUM) {
+                            LOGGER.info(String.valueOf(BATCH_TRACE_LIST.size()));
+                            Thread.sleep(1000);
                         }
                     }
                 }

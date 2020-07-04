@@ -38,13 +38,15 @@ public class BackendProcessData implements Runnable{
 
     private static int SERVER_CACHE_NUM;
 
+    private static final int SERVER_CACHE_NUM_MIN = 3;
+
     public static void init() {
         for (int i = 0; i < THREAD_COUNT; i++) {
             BackendProcess backendProcess = new BackendProcess(i);
             BackendTHREADLIST.add(backendProcess);
             SERVER_CACHE_NUM = ALL_SERVER_CACHE_NUM / THREAD_COUNT;
-            if(SERVER_CACHE_NUM <= 2){
-                SERVER_CACHE_NUM = 4;
+            if(SERVER_CACHE_NUM < SERVER_CACHE_NUM_MIN){
+                SERVER_CACHE_NUM = SERVER_CACHE_NUM_MIN;
             }
         }
     }
@@ -169,6 +171,9 @@ public class BackendProcessData implements Runnable{
             }
         }
 
+        LOGGER.info("getFinishedBatch " + nextBatch.getThreadId() + "count:"+ nextBatch.getProcessCount());
+        LOGGER.info("getFinishedBatch " + currentBatch.getThreadId() + "count:"+ currentBatch.getProcessCount());
+
         // when client process is finished, or then next trace batch is finished. to get checksum for wrong traces.
         boolean cond1 = BackendTHREADLIST.get(threadId).FINISH_CLIENT_COUNT >= CLIENT_COUNT;
         boolean cond2 = currentBatch.getProcessCount() >= CLIENT_COUNT && nextBatch.getProcessCount() >= CLIENT_COUNT;
@@ -186,11 +191,12 @@ public class BackendProcessData implements Runnable{
         return null;
     }
 
-    public static String setWrongTraceId(@RequestParam String traceIdListJson, @RequestParam int batchPos,
+    public synchronized static String setWrongTraceId(@RequestParam String traceIdListJson, @RequestParam int batchPos,
                                          @RequestParam int threadID, @RequestParam boolean isFinish) {
         List<String> traceIdList = JSON.parseObject(traceIdListJson, new TypeReference<List<String>>() {
         });
         LOGGER.info(String.format("setWrongTraceId had called, batchPos:%d", batchPos));
+        int pos = batchPos % SERVER_CACHE_NUM;
         Map<Integer, TraceIdBatch> traceIdBatches = BackendTHREADLIST.get(threadID).traceIdBatches;
         TraceIdBatch traceIdBatch = traceIdBatches.get(batchPos);
 
@@ -201,21 +207,21 @@ public class BackendProcessData implements Runnable{
                 traceIdBatches.put(batchPos, traceIdBatch);
             }
             traceIdBatch.setBatchPos(batchPos);
-            traceIdBatch.setProcessCount(traceIdBatch.getProcessCount() + 1);
             traceIdBatch.setThreadId(threadID);
             traceIdBatch.getTraceIdList().addAll(traceIdList);
+            traceIdBatch.setProcessCount(traceIdBatch.getProcessCount() + 1);
             if(batchPos==0){
                 traceIdBatch.setFirst(true);
             }
             if(isFinish){
                 traceIdBatch.setLast(true);
             }
-//            LOGGER.info("setWrongTraceId " + batchPos +traceIdBatch.isFirst()+traceIdBatch.isLast());
+            LOGGER.info("setWrongTraceId " + batchPos +traceIdBatch.isFirst()+traceIdBatch.isLast());
         }
         return "suc";
     }
 
-    public static String finish(int threadID, String abandonFirstString, String abandonLastString) {
+    public synchronized static String finish(int threadID, String abandonFirstString, String abandonLastString) {
         BackendTHREADLIST.get(threadID).FINISH_CLIENT_COUNT++;
         BackendTHREADLIST.get(threadID).abandonFirstString = abandonFirstString;
         BackendTHREADLIST.get(threadID).abandonLastString = abandonLastString;
@@ -283,6 +289,7 @@ public class BackendProcessData implements Runnable{
                     traceIdBatch = getFinishedBatch(threadID);
 
                     if (traceIdBatch == null) {
+                        LOGGER.info("traceIdBatch is null");
                         // send checksum when client process has all finished.
                         if (isFinished(threadID)) {
                             BACKEND_FINISH_THREAD_COUNT++;
@@ -297,8 +304,9 @@ public class BackendProcessData implements Runnable{
                     getWrongTraceMD5(processMap1, processMap2);
                     LOGGER.info("getWrong:" + batchPos + ", traceIdsize:" + traceIdBatch.getTraceIdList().size());
                     // TODO to use lock/notify
-                    while (traceIdBatches.size() > SERVER_CACHE_NUM){
-                        Thread.sleep(10);
+                    while (traceIdBatches.size() >= SERVER_CACHE_NUM){
+                        LOGGER.info(String.valueOf(traceIdBatches.size()));
+                        Thread.sleep(1000);
                     }
 
                 } catch (Exception e) {
@@ -354,13 +362,37 @@ public class BackendProcessData implements Runnable{
             Map<Boolean,TraceIdBatch> map = new HashMap<>();
             for(Map.Entry<Integer, TraceIdBatch> entry: BackendTHREADLIST.get(i).traceIdBatches.entrySet()){
                 if(i != THREAD_COUNT - 1 && !entry.getValue().isFirst()){
-                    // TODO 考虑正好读一行的情况，也就是说是两个完整的trace
-                    String s = BackendTHREADLIST.get(i).abandonLastString +
-                            BackendTHREADLIST.get(i + 1).abandonFirstString;
-                    String[] cols = s.split("\\|");
-                    if (cols.length > 1) {
-                        String traceId = cols[0];
+                    // 虑正好读一行的情况，也就是说是两个完整的trace
+                    String[] colsLast = BackendTHREADLIST.get(i).abandonLastString.split("\\|");
+                    String[] colsFirst = BackendTHREADLIST.get(i + 1).abandonFirstString.split("\\|");
+                    if (colsLast.length > 8){
+                        String traceId = colsLast[0];
+                        String tags = colsLast[8];
+                        if (tags != null) {
+                            if (tags.contains("error=1")) {
+                                entry.getValue().getTraceIdList().add(traceId);
+                            } else if (tags.contains("http.status_code=") && !tags.contains("http.status_code=200")) {
+                                entry.getValue().getTraceIdList().add(traceId);
+                            }
+                        }
+                    }
+                    if (colsFirst.length > 8){
+                        String traceId = colsLast[0];
+                        String tags = colsLast[8];
+                        if (tags != null) {
+                            if (tags.contains("error=1")) {
+                                entry.getValue().getTraceIdList().add(traceId);
+                            } else if (tags.contains("http.status_code=") && !tags.contains("http.status_code=200")) {
+                                entry.getValue().getTraceIdList().add(traceId);
+                            }
+                        }
+                    }
+                    if (colsFirst.length < 8 && colsLast.length < 8){
+                        String s = BackendTHREADLIST.get(i).abandonLastString +
+                                BackendTHREADLIST.get(i + 1).abandonFirstString;
+                        String[] cols = s.split("\\|");
                         if (cols.length > 8) {
+                            String traceId = cols[0];
                             String tags = cols[8];
                             if (tags != null) {
                                 if (tags.contains("error=1")) {
