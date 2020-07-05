@@ -21,9 +21,7 @@ import java.net.HttpURLConnection;
 import java.net.Proxy;
 import java.net.URL;
 import java.util.*;
-import java.util.concurrent.locks.Condition;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.alibaba.tailbase.backendprocess.BackendProcessData.getStartTime;
 
@@ -35,9 +33,9 @@ public class ClientProcessData implements Runnable {
 
     public static int THREAD_COUNT = 2;
 
-    private static final int ALL_CLIENT_ALLOW_CACHE_NUM = 40;
+    private static final int ALL_CLIENT_ALLOW_CACHE_NUM = 80;
 
-    private static int NOW_CACHE_NUM = 0;
+    private static final AtomicInteger Now_CACHE_NUM = new AtomicInteger(0);
 
 
     // 第一个线程永久保存尾三批，最后一个线程永久保存首二批，其它线程永久保存首二批、尾三批，至少要有三批的自由空间，计算方法：首部永久保存数+max(尾部永久保存数,最少自由空间)
@@ -46,8 +44,6 @@ public class ClientProcessData implements Runnable {
 
     private static URL url = null;
 
-    private static final Lock lock = new ReentrantLock();
-    private static final Condition condition = lock.newCondition();
 
 
     public static void start() {
@@ -146,13 +142,7 @@ public class ClientProcessData implements Runnable {
         // to clear spans, don't block client process thread. TODO to use lock/notify
         if(previous > 1){
             threadList.get(threadID).BATCH_TRACE_LIST.remove(previous);
-            lock.lock();
-            try {
-                NOW_CACHE_NUM --;
-                condition.signal();
-            }finally {
-                lock.unlock();
-            }
+            Now_CACHE_NUM.decrementAndGet();
         }
         LOGGER.info("getWrongTrace, batchPos:" + batchPos + " thread: "+ threadID);
         for(List<Map<Long,String>> list : wrongTraceMap.values()){
@@ -260,14 +250,9 @@ public class ClientProcessData implements Runnable {
                         badTraceIdList.clear();
                         batchPos++;
                         traceMap = new HashMap<>();
-                        lock.lock();
-                        try {
-                            NOW_CACHE_NUM ++;
-                            while (NOW_CACHE_NUM >= ALL_CLIENT_ALLOW_CACHE_NUM) {
-                                condition.await();
-                        }
-                    }finally {
-                            lock.unlock();
+                        Now_CACHE_NUM.incrementAndGet();
+                        while (Now_CACHE_NUM.get() >= ALL_CLIENT_ALLOW_CACHE_NUM) {
+                            Thread.sleep(10);
                         }
                     }
                 }

@@ -16,9 +16,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.locks.Condition;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
 
 import static com.alibaba.tailbase.Constants.*;
 import static com.alibaba.tailbase.clientprocess.ClientProcessData.THREAD_COUNT;
@@ -27,7 +24,7 @@ public class BackendProcessData implements Runnable{
 
     private static final Logger LOGGER = LoggerFactory.getLogger(BackendController.class.getName());
 
-    private static int BACKEND_FINISH_THREAD_COUNT = 0;
+    private static final AtomicInteger BACKEND_FINISH_THREAD_COUNT = new AtomicInteger(0);
 
     private static final List<BackendProcess> backendThreadList = new ArrayList<>();
 
@@ -35,15 +32,12 @@ public class BackendProcessData implements Runnable{
 
     private static final String[] ports = new String[]{CLIENT_PROCESS_PORT1, CLIENT_PROCESS_PORT2};
 
-    private static final int ALL_SERVER_CACHE_NUM = 180;
+    private static final int ALL_SERVER_CACHE_NUM = 360;
 
     private static int SERVER_CACHE_NUM;
 
     // 第一个线程永久保存尾两批，最后一个线程永久保存首一批，其它线程永久保存首一批、尾两批,至少要有1批的空间，计算方法：首部永久保存数+max(尾部永久保存数,最少自由空间)
     private static final int SERVER_CACHE_NUM_MIN = 3;
-
-    private static final Lock lockFinish = new ReentrantLock();
-    private static final Condition conditionFinish = lockFinish.newCondition();
 
     public static void init() {
         SERVER_CACHE_NUM = ALL_SERVER_CACHE_NUM / THREAD_COUNT;
@@ -68,18 +62,19 @@ public class BackendProcessData implements Runnable{
         for(int i=0; i<THREAD_COUNT; i++){
             new Thread(backendThreadList.get(i)).start();
         }
-        lockFinish.lock();
-        try{
-            while(BACKEND_FINISH_THREAD_COUNT < THREAD_COUNT){
-                conditionFinish.await();
+        while (true){
+            if (BACKEND_FINISH_THREAD_COUNT.get() == THREAD_COUNT){
+                LOGGER.info("begin handelAbandonWrongTrace");
+                handelAbandonWrongTrace();
+                if (sendCheckSum()) {
+                    break;
+                }
             }
-            LOGGER.info("begin handelAbandonWrongTrace");
-            handelAbandonWrongTrace();
-            sendCheckSum();
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        } finally {
-            lockFinish.unlock();
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
         }
     }
 
@@ -109,7 +104,7 @@ public class BackendProcessData implements Runnable{
     }
 
 
-    private void sendCheckSum() {
+    private boolean sendCheckSum() {
         try {
             String result = JSON.toJSONString(TRACE_CHECKSUM_MAP);
             RequestBody body = new FormBody.Builder()
@@ -120,13 +115,15 @@ public class BackendProcessData implements Runnable{
             if (response.isSuccessful()) {
                 response.close();
                 LOGGER.warn("suc to sendCheckSum");
-                return;
+                return true;
             }
             LOGGER.warn("fail to sendCheckSum:" + response.message());
             response.close();
+            return false;
         } catch (Exception e) {
             LOGGER.warn("fail to call finish", e);
         }
+        return false;
     }
 
     public static long getStartTime(String span) {
@@ -219,7 +216,7 @@ public class BackendProcessData implements Runnable{
         if (traceIdList != null) {
             traceIdBatch.setBatchPos(batchPos);
             traceIdBatch.getTraceIdList().addAll(traceIdList);
-            traceIdBatch.setProcessCount(traceIdBatch.getProcessCount() + 1);
+            traceIdBatch.increaseProcessCount();
             if(isFinish){
                 traceIdBatch.setLast(true);
             }
@@ -321,24 +318,10 @@ public class BackendProcessData implements Runnable{
 //                        LOGGER.info("traceIdBatch is null");
                         // send checksum when client process has all finished.
                         if (FINISH_CLIENT_COUNT.get() == Constants.CLIENT_COUNT && haveSendLast) {
-                            lockFinish.lock();
-                            try{
-                                BACKEND_FINISH_THREAD_COUNT ++;
-                                conditionFinish.signal();
-                            }finally {
-                                lockFinish.unlock();
-                            }
+                            BACKEND_FINISH_THREAD_COUNT.incrementAndGet();
                             break;
                         }
-                        else {
-//                            lockGetTrace.lock();
-//                            try{
-//                                conditionGetTrace.await();
-//                            }finally {
-//                                lockGetTrace.unlock();
-//                            }
-                            continue;
-                        }
+                        continue;
                     }
                     int batchPos = traceIdBatch.getBatchPos();
                     Map<String, List<Map<Long,String>>> processMap1 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[0], batchPos, threadID);
@@ -353,12 +336,13 @@ public class BackendProcessData implements Runnable{
                         batchPos = traceIdBatch.getBatchPos();
                     }
                     LOGGER.warn(String.format("fail to getWrongTrace, batchPos:%d", batchPos), e);
-                }
-                finally {
-                    try {
-                        Thread.sleep(100);
-                    } catch (InterruptedException e) {
-                        e.printStackTrace();
+                } finally {
+                    if (traceIdBatch == null) {
+                        try {
+                            Thread.sleep(100);
+                        } catch (Throwable e) {
+                            // quiet
+                        }
                     }
                 }
             }

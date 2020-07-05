@@ -3,12 +3,13 @@ package com.alibaba.tailbase.backendprocess;
 import com.alibaba.tailbase.Constants;
 
 import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class TraceIdBatch {
     // 对应 Client 的批次
 
     private int batchPos = 0;
-    private int processCount = 0;
+    private AtomicInteger processCount = new AtomicInteger(0);
     private boolean isLast = false;
 
     private HashSet<String> traceIdList = new HashSet<>(Constants.BATCH_SIZE / 10);
@@ -22,11 +23,11 @@ public class TraceIdBatch {
     }
 
     public int getProcessCount() {
-        return processCount;
+        return processCount.get();
     }
 
-    public void setProcessCount(int processCount) {
-        this.processCount = processCount;
+    public void increaseProcessCount() {
+        this.processCount.incrementAndGet();
     }
 
     public HashSet<String> getTraceIdList() {
