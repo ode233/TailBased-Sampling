@@ -94,11 +94,6 @@ public class ClientProcessData implements Runnable {
         }
     }
 
-    /**
-     *  call backend controller to update wrong tradeId list.
-     * @param badTraceIdSet batchPos批次的所有wrongTraceId
-     * @param batchPos
-     */
     private static void updateWrongTraceId(Set<String> badTraceIdSet, int batchPos, int threadID, Boolean isFinish) {
         String json = JSON.toJSONString(badTraceIdSet);
         // 无论List是否为空都必须发起一次Request，因为Backend需要统计操作次数

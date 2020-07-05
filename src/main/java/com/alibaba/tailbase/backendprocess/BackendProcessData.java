@@ -82,13 +82,6 @@ public class BackendProcessData implements Runnable{
         }
     }
 
-    /**
-     * call client process, to get all spans of wrong traces.
-     * @param traceIdList
-     * @param port
-     * @param batchPos
-     * @return
-     */
     private static Map<String,List<Map<Long,String>>>  getWrongTrace(@RequestParam String traceIdList, String port, int batchPos, int threadID) {
         try {
             RequestBody body = new FormBody.Builder()
@@ -141,10 +134,6 @@ public class BackendProcessData implements Runnable{
     }
 
 
-    /**
-     * get finished bath when current and next batch has all finished
-     * @return
-     */
     public static TraceIdBatch getFinishedBatch(int threadId) {
         BackendProcess backendProcess = backendThreadList.get(threadId);
         int current = backendProcess.CURRENT_BATCH;
@@ -293,7 +282,7 @@ public class BackendProcessData implements Runnable{
 
         @Override
         public void run() {
-            TraceIdBatch traceIdBatch = null;
+            TraceIdBatch traceIdBatch;
 
             while (true) {
                 try {
@@ -331,10 +320,6 @@ public class BackendProcessData implements Runnable{
 
                 } catch (Exception e) {
                     // record batchPos when an exception  occurs.
-                    int batchPos = 0;
-                    if (traceIdBatch != null) {
-                        batchPos = traceIdBatch.getBatchPos();
-                    }
 //                    LOGGER.warn(String.format("fail to getWrongTrace, batchPos:%d", batchPos), e);
                 }
             }
