@@ -342,11 +342,11 @@ public class BackendProcessData implements Runnable{
                             try{
                                 isLock = true;
                                 conditionGetTrace.await();
-                                continue;
                             }finally {
                                 lockGetTrace.unlock();
                             }
                         }
+                        continue;
                     }
                     int batchPos = traceIdBatch.getBatchPos();
                     Map<String, List<Map<Long,String>>> processMap1 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[0], batchPos, threadID);
