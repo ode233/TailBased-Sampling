@@ -9,8 +9,6 @@ import okhttp3.FormBody;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.RequestParam;
 
 import java.util.*;
@@ -25,7 +23,7 @@ import static com.alibaba.tailbase.clientprocess.ClientProcessData.THREAD_COUNT;
 
 public class BackendProcessData implements Runnable{
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(BackendController.class.getName());
+//    private static final Logger LOGGER = LoggerFactory.getLogger(BackendController.class.getName());
 
     private static int BACKEND_FINISH_THREAD_COUNT = 0;
 
@@ -104,7 +102,7 @@ public class BackendProcessData implements Runnable{
             response.close();
             return resultMap;
         } catch (Exception e) {
-            LOGGER.warn("fail to getWrongTrace,batchPos:" + batchPos, e);
+//            LOGGER.warn("fail to getWrongTrace,batchPos:" + batchPos, e);
         }
         return null;
     }
@@ -120,14 +118,14 @@ public class BackendProcessData implements Runnable{
             Response response = Utils.callHttp(request);
             if (response.isSuccessful()) {
                 response.close();
-                LOGGER.warn("suc to sendCheckSum");
+//                LOGGER.warn("suc to sendCheckSum");
                 return true;
             }
-            LOGGER.warn("fail to sendCheckSum:" + response.message());
+//            LOGGER.warn("fail to sendCheckSum:" + response.message());
             response.close();
             return false;
         } catch (Exception e) {
-            LOGGER.warn("fail to call finish", e);
+//            LOGGER.warn("fail to call finish", e);
         }
         return false;
     }
@@ -142,29 +140,6 @@ public class BackendProcessData implements Runnable{
         return -1;
     }
 
-
-    /**
-     * trace batch will be finished, when client process has finished.(FINISH_PROCESS_COUNT == PROCESS_COUNT)
-     * @return
-     */
-    public static boolean isFinished(int threadID) {
-        if (backendThreadList.get(threadID).FINISH_CLIENT_COUNT.get() < Constants.CLIENT_COUNT){
-            return false;
-        }
-        Map<Integer, TraceIdBatch> traceIdBatches = backendThreadList.get(threadID).traceIdBatches;
-        // 第一个线程永久保存尾两批，最后一个线程永久保存首一批，其它线程永久保存首一批、尾两批
-//        LOGGER.info("isFinished threadID: " + threadID + "traceIdBatches size: "+traceIdBatches.size());
-//        if(threadID == 0){
-//            return traceIdBatches.size() <= 2;
-//        }
-//        else if (threadID == THREAD_COUNT - 1){
-//            return traceIdBatches.size() <= 1;
-//        }
-//        else {
-//            return traceIdBatches.size() <= 3;
-//        }
-        return true;
-    }
 
     /**
      * get finished bath when current and next batch has all finished
@@ -213,7 +188,7 @@ public class BackendProcessData implements Runnable{
                                          @RequestParam int threadID, @RequestParam boolean isFinish) {
         List<String> traceIdList = JSON.parseObject(traceIdListJson, new TypeReference<List<String>>() {
         });
-        LOGGER.info(String.format("setWrongTraceId had called, batchPos:%d", batchPos));
+//        LOGGER.info(String.format("setWrongTraceId had called, batchPos:%d", batchPos));
         BackendProcess backendProcess = backendThreadList.get(threadID);
         Map<Integer, TraceIdBatch> traceIdBatches = backendProcess.traceIdBatches;
         TraceIdBatch traceIdBatch = traceIdBatches.get(batchPos);
@@ -235,7 +210,7 @@ public class BackendProcessData implements Runnable{
                     backendProcess.lockGetTrace.unlock();
                 }
             }
-            LOGGER.info("setWrongTraceId " + batchPos + traceIdBatch.isLast());
+//            LOGGER.info("setWrongTraceId " + batchPos + traceIdBatch.isLast());
         }
         return "suc";
     }
@@ -251,7 +226,7 @@ public class BackendProcessData implements Runnable{
             backendProcess.client2AbandonFirstString = abandonFirstString;
             backendProcess.client2AbandonLastString = abandonLastString;
         }
-        LOGGER.warn("receive call 'finish', count:" + backendProcess.FINISH_CLIENT_COUNT);
+//        LOGGER.warn("receive call 'finish', count:" + backendProcess.FINISH_CLIENT_COUNT);
         return "suc";
     }
 
@@ -352,7 +327,7 @@ public class BackendProcessData implements Runnable{
                     Map<String, List<Map<Long,String>>> processMap1 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[0], batchPos, threadID);
                     Map<String, List<Map<Long,String>>> processMap2 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[1], batchPos, threadID);
                     getWrongTraceMD5(processMap1, processMap2);
-                    LOGGER.info("getWrong:" + batchPos);
+//                    LOGGER.info("getWrong:" + batchPos);
 
                 } catch (Exception e) {
                     // record batchPos when an exception  occurs.
@@ -360,7 +335,7 @@ public class BackendProcessData implements Runnable{
                     if (traceIdBatch != null) {
                         batchPos = traceIdBatch.getBatchPos();
                     }
-                    LOGGER.warn(String.format("fail to getWrongTrace, batchPos:%d", batchPos), e);
+//                    LOGGER.warn(String.format("fail to getWrongTrace, batchPos:%d", batchPos), e);
                 }
             }
         }
@@ -434,7 +409,7 @@ public class BackendProcessData implements Runnable{
         Map<String, List<Map<Long,String>>> processMap1 = getAbandonWrongTrace(JSON.toJSONString(abandonWrongTraces), ports[0], JSON.toJSONString(allClient1ConcatTrace));
         Map<String, List<Map<Long,String>>> processMap2 = getAbandonWrongTrace(JSON.toJSONString(abandonWrongTraces), ports[1], JSON.toJSONString(allClient2ConcatTrace));
         getWrongTraceMD5(processMap1, processMap2);
-        LOGGER.info("finish handelAbandonWrongTrace");
+//        LOGGER.info("finish handelAbandonWrongTrace");
     }
 
     private static Map<String, List<String>> concatLastTrace(String nowBatchAbandonLastString, String nextBatchAbandonFirstString, HashSet<String>  traceIdList){
@@ -507,7 +482,7 @@ public class BackendProcessData implements Runnable{
             response.close();
             return resultMap;
         } catch (Exception e) {
-            LOGGER.warn("fail to getAbandonTrace", e);
+//            LOGGER.warn("fail to getAbandonTrace", e);
         }
         return null;
     }

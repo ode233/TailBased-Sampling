@@ -10,8 +10,6 @@ import okhttp3.FormBody;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.util.StringUtils;
 
 import java.io.BufferedReader;
@@ -30,7 +28,7 @@ import static com.alibaba.tailbase.backendprocess.BackendProcessData.getStartTim
 
 public class ClientProcessData implements Runnable {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(ClientProcessData.class.getName());
+//    private static final Logger LOGGER = LoggerFactory.getLogger(ClientProcessData.class.getName());
 
 
     public static int THREAD_COUNT = 2;
@@ -71,15 +69,15 @@ public class ClientProcessData implements Runnable {
         String path = getPath();
         // process data on client, not server
         if (StringUtils.isEmpty(path)) {
-            LOGGER.warn("path is empty");
+//            LOGGER.warn("path is empty");
             return;
         }
         try {
             url = new URL(path);
-            LOGGER.info("data path:" + path);
+//            LOGGER.info("data path:" + path);
             HttpURLConnection httpConnection = (HttpURLConnection) url.openConnection(Proxy.NO_PROXY);
             long totalSize = httpConnection.getContentLengthLong();
-            LOGGER.info("file totalSize: "+ totalSize);
+//            LOGGER.info("file totalSize: "+ totalSize);
             long slice = totalSize/ THREAD_COUNT;
             for (int i = 0; i < THREAD_COUNT; i++) {
                 threadList.get(i).from = i*slice;
@@ -106,7 +104,7 @@ public class ClientProcessData implements Runnable {
         // 无论List是否为空都必须发起一次Request，因为Backend需要统计操作次数
         //if (badTraceIdSet.size() > 0) {
             try {
-                LOGGER.info("updateBadTraceId, batchPos:" + batchPos);
+//                LOGGER.info("updateBadTraceId, batchPos:" + batchPos);
                 RequestBody body = new FormBody.Builder()
                         .add("traceIdListJson", json)
                         .add("batchPos", batchPos + "")
@@ -116,7 +114,7 @@ public class ClientProcessData implements Runnable {
                 Response response = Utils.callHttp(request);
                 response.close();
             } catch (Exception e) {
-                LOGGER.warn("fail to updateBadTraceId, json:" + json + ", batch:" + batchPos);
+//                LOGGER.warn("fail to updateBadTraceId, json:" + json + ", batch:" + batchPos);
             }
         //}
     }
@@ -135,7 +133,7 @@ public class ClientProcessData implements Runnable {
             Response response = Utils.callHttp(request);
             response.close();
         } catch (Exception e) {
-            LOGGER.warn("fail to callFinish");
+//            LOGGER.warn("fail to callFinish");
         }
     }
 
@@ -163,7 +161,7 @@ public class ClientProcessData implements Runnable {
                 }
             }
         }
-        LOGGER.info("getWrongTrace, batchPos:" + batchPos + " thread: "+ threadID);
+//        LOGGER.info("getWrongTrace, batchPos:" + batchPos + " thread: "+ threadID);
         for(List<Map<Long,String>> list : wrongTraceMap.values()){
             list.sort(Comparator.comparing(o -> o.entrySet().iterator().next().getKey()));
         }
@@ -345,7 +343,7 @@ public class ClientProcessData implements Runnable {
                 getWrongTraceWithBatch(0, traceIdBatch.getTraceIdList(), wrongTraceMap, i+1);
             }
         }
-        LOGGER.info("getAbandonWrongTrace");
+//        LOGGER.info("getAbandonWrongTrace");
         for(List<Map<Long,String>> list : wrongTraceMap.values()){
             list.sort(Comparator.comparing(o -> o.entrySet().iterator().next().getKey()));
         }
