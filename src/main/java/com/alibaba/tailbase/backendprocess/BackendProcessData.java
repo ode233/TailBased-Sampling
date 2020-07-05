@@ -15,6 +15,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static com.alibaba.tailbase.Constants.*;
 import static com.alibaba.tailbase.clientprocess.ClientProcessData.THREAD_COUNT;
@@ -23,13 +27,13 @@ public class BackendProcessData implements Runnable{
 
     private static final Logger LOGGER = LoggerFactory.getLogger(BackendController.class.getName());
 
-    private static volatile Integer BACKEND_FINISH_THREAD_COUNT = 0;
+    private static int BACKEND_FINISH_THREAD_COUNT = 0;
 
-    private static List<BackendProcess> BackendTHREADLIST = new ArrayList<>();
+    private static final List<BackendProcess> backendThreadList = new ArrayList<>();
 
-    private static Map<String, String> TRACE_CHECKSUM_MAP= new ConcurrentHashMap<>();
+    private static final Map<String, String> TRACE_CHECKSUM_MAP= new ConcurrentHashMap<>();
 
-    private static String[] ports = new String[]{CLIENT_PROCESS_PORT1, CLIENT_PROCESS_PORT2};
+    private static final String[] ports = new String[]{CLIENT_PROCESS_PORT1, CLIENT_PROCESS_PORT2};
 
     private static final int ALL_SERVER_CACHE_NUM = 180;
 
@@ -38,13 +42,19 @@ public class BackendProcessData implements Runnable{
     // 第一个线程永久保存尾两批，最后一个线程永久保存首一批，其它线程永久保存首一批、尾两批,至少要有1批的空间，计算方法：首部永久保存数+max(尾部永久保存数,最少自由空间)
     private static final int SERVER_CACHE_NUM_MIN = 3;
 
+    private static final Lock lockFinish = new ReentrantLock();
+    private static final Condition conditionFinish = lockFinish.newCondition();
+
     public static void init() {
+        SERVER_CACHE_NUM = ALL_SERVER_CACHE_NUM / THREAD_COUNT;
+        if(SERVER_CACHE_NUM < SERVER_CACHE_NUM_MIN){
+            SERVER_CACHE_NUM = SERVER_CACHE_NUM_MIN;
+        }
         for (int i = 0; i < THREAD_COUNT; i++) {
             BackendProcess backendProcess = new BackendProcess(i);
-            BackendTHREADLIST.add(backendProcess);
-            SERVER_CACHE_NUM = ALL_SERVER_CACHE_NUM / THREAD_COUNT;
-            if(SERVER_CACHE_NUM < SERVER_CACHE_NUM_MIN){
-                SERVER_CACHE_NUM = SERVER_CACHE_NUM_MIN;
+            backendThreadList.add(backendProcess);
+            for (int j = 0; j < SERVER_CACHE_NUM; j++){
+                backendProcess.traceIdBatches.put(j,new TraceIdBatch());
             }
         }
     }
@@ -56,16 +66,20 @@ public class BackendProcessData implements Runnable{
     @Override
     public void run() {
         for(int i=0; i<THREAD_COUNT; i++){
-            new Thread(BackendTHREADLIST.get(i)).start();
+            new Thread(backendThreadList.get(i)).start();
         }
-        while (true){
-            if (BACKEND_FINISH_THREAD_COUNT == THREAD_COUNT){
-                LOGGER.info("begin handelAbandonWrongTrace");
-                handelAbandonWrongTrace();
-                if (sendCheckSum()) {
-                    break;
-                }
+        lockFinish.lock();
+        try{
+            while(BACKEND_FINISH_THREAD_COUNT < THREAD_COUNT){
+                conditionFinish.await();
             }
+            LOGGER.info("begin handelAbandonWrongTrace");
+            handelAbandonWrongTrace();
+            sendCheckSum();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } finally {
+            lockFinish.unlock();
         }
     }
 
@@ -95,7 +109,7 @@ public class BackendProcessData implements Runnable{
     }
 
 
-    private boolean sendCheckSum() {
+    private void sendCheckSum() {
         try {
             String result = JSON.toJSONString(TRACE_CHECKSUM_MAP);
             RequestBody body = new FormBody.Builder()
@@ -106,15 +120,13 @@ public class BackendProcessData implements Runnable{
             if (response.isSuccessful()) {
                 response.close();
                 LOGGER.warn("suc to sendCheckSum");
-                return true;
+                return;
             }
             LOGGER.warn("fail to sendCheckSum:" + response.message());
             response.close();
-            return false;
         } catch (Exception e) {
             LOGGER.warn("fail to call finish", e);
         }
-        return false;
     }
 
     public static long getStartTime(String span) {
@@ -133,20 +145,22 @@ public class BackendProcessData implements Runnable{
      * @return
      */
     public static boolean isFinished(int threadID) {
-        if (BackendTHREADLIST.get(threadID).FINISH_CLIENT_COUNT < Constants.CLIENT_COUNT){
+        if (backendThreadList.get(threadID).FINISH_CLIENT_COUNT.get() < Constants.CLIENT_COUNT){
             return false;
         }
-        Map<Integer, TraceIdBatch> traceIdBatches = BackendTHREADLIST.get(threadID).traceIdBatches;
+        Map<Integer, TraceIdBatch> traceIdBatches = backendThreadList.get(threadID).traceIdBatches;
         // 第一个线程永久保存尾两批，最后一个线程永久保存首一批，其它线程永久保存首一批、尾两批
-        if(threadID == 0){
-            return traceIdBatches.size() <= 2;
-        }
-        else if (threadID == THREAD_COUNT - 1){
-            return traceIdBatches.size() <= 1;
-        }
-        else {
-            return traceIdBatches.size() <= 3;
-        }
+//        LOGGER.info("isFinished threadID: " + threadID + "traceIdBatches size: "+traceIdBatches.size());
+//        if(threadID == 0){
+//            return traceIdBatches.size() <= 2;
+//        }
+//        else if (threadID == THREAD_COUNT - 1){
+//            return traceIdBatches.size() <= 1;
+//        }
+//        else {
+//            return traceIdBatches.size() <= 3;
+//        }
+        return true;
     }
 
     /**
@@ -154,93 +168,84 @@ public class BackendProcessData implements Runnable{
      * @return
      */
     public static TraceIdBatch getFinishedBatch(int threadId) {
-        int current = BackendTHREADLIST.get(threadId).CURRENT_BATCH;
+        BackendProcess backendProcess = backendThreadList.get(threadId);
+        int current = backendProcess.CURRENT_BATCH;
         int next = current + 1;
-        Map<Integer, TraceIdBatch> traceIdBatches = BackendTHREADLIST.get(threadId).traceIdBatches;
+        Map<Integer, TraceIdBatch> traceIdBatches = backendProcess.traceIdBatches;
         TraceIdBatch nextBatch = traceIdBatches.get(next);
         TraceIdBatch currentBatch = traceIdBatches.get(current);
-
-        if(currentBatch == null || nextBatch == null){
-            if (currentBatch != null && currentBatch.isLast() && threadId == THREAD_COUNT - 1) {
-                traceIdBatches.remove(current);
-                BackendTHREADLIST.get(threadId).CURRENT_BATCH = next;
-                return currentBatch;
-            }
-            else {
-                return null;
-            }
-        }
 
 //        LOGGER.info("getFinishedBatch " + nextBatch.getBatchPos() + "count:"+ nextBatch.getProcessCount());
 //        LOGGER.info("getFinishedBatch " + currentBatch.getBatchPos() + "count:"+ currentBatch.getProcessCount());
 
         // when client process is finished, or then next trace batch is finished. to get checksum for wrong traces.
-        boolean cond1 = BackendTHREADLIST.get(threadId).FINISH_CLIENT_COUNT >= CLIENT_COUNT;
+//        boolean cond1 = BackendTHREADLIST.get(threadId).FINISH_CLIENT_COUNT >= CLIENT_COUNT;
+        boolean cond1 = currentBatch.isLast() && threadId == THREAD_COUNT - 1;
         boolean cond2 = currentBatch.getProcessCount() >= CLIENT_COUNT && nextBatch.getProcessCount() >= CLIENT_COUNT;
         if (cond1 || cond2) {
             if((current == 0) && threadId != 0){
-                BackendTHREADLIST.get(threadId).CURRENT_BATCH = next;
+                backendProcess.CURRENT_BATCH = next;
                 return null;
             }
             if(nextBatch.isLast() && threadId != THREAD_COUNT - 1){
-                BackendTHREADLIST.get(threadId).CURRENT_BATCH = next;
+                backendProcess.CURRENT_BATCH = next;
+                backendProcess.haveSendLast = true;
                 return null;
             }
             else {
                 traceIdBatches.remove(current);
-                BackendTHREADLIST.get(threadId).CURRENT_BATCH = next;
+                backendProcess.LAST_BATCH += 1;
+                backendProcess.traceIdBatches.put(backendProcess.LAST_BATCH, new TraceIdBatch());
+                backendProcess.CURRENT_BATCH = next;
+                if (currentBatch.isLast()){
+                    backendProcess.haveSendLast = true;
+                }
                 return currentBatch;
             }
         }
         return null;
     }
 
-    public synchronized static String setWrongTraceId(@RequestParam String traceIdListJson, @RequestParam int batchPos,
+    public static String setWrongTraceId(@RequestParam String traceIdListJson, @RequestParam int batchPos,
                                          @RequestParam int threadID, @RequestParam boolean isFinish) {
         List<String> traceIdList = JSON.parseObject(traceIdListJson, new TypeReference<List<String>>() {
         });
         LOGGER.info(String.format("setWrongTraceId had called, batchPos:%d", batchPos));
-        Map<Integer, TraceIdBatch> traceIdBatches = BackendTHREADLIST.get(threadID).traceIdBatches;
+        BackendProcess backendProcess = backendThreadList.get(threadID);
+        Map<Integer, TraceIdBatch> traceIdBatches = backendProcess.traceIdBatches;
         TraceIdBatch traceIdBatch = traceIdBatches.get(batchPos);
 
-        // TODO to use lock/notify
-        while (traceIdBatches.size() >= SERVER_CACHE_NUM){
-//            LOGGER.info(String.valueOf(traceIdBatches.size()));
-            try {
-                Thread.sleep(10);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-        }
-
-        // 不能有 traceIdList.size() > 0
+        // 锁好像没有任何意义，只能确保在容量满之前消耗掉
         if (traceIdList != null) {
-            if (traceIdBatch == null){
-                traceIdBatch = new TraceIdBatch();
-                traceIdBatches.put(batchPos, traceIdBatch);
-            }
             traceIdBatch.setBatchPos(batchPos);
             traceIdBatch.getTraceIdList().addAll(traceIdList);
             traceIdBatch.setProcessCount(traceIdBatch.getProcessCount() + 1);
             if(isFinish){
                 traceIdBatch.setLast(true);
             }
+//            backendProcess.lockGetTrace.lock();
+//            try{
+//                backendProcess.conditionGetTrace.signal();
+//            }finally {
+//                backendProcess.lockGetTrace.unlock();
+//            }
             LOGGER.info("setWrongTraceId " + batchPos + traceIdBatch.isLast());
         }
         return "suc";
     }
 
-    public synchronized static String finish(int threadID, String abandonFirstString, String abandonLastString, String port) {
-        BackendTHREADLIST.get(threadID).FINISH_CLIENT_COUNT++;
+    public static String finish(int threadID, String abandonFirstString, String abandonLastString, String port) {
+        BackendProcess backendProcess = backendThreadList.get(threadID);
+        backendProcess.FINISH_CLIENT_COUNT.incrementAndGet();
         if (Constants.CLIENT_PROCESS_PORT1.equals(port)) {
-            BackendTHREADLIST.get(threadID).client1AbandonFirstString = abandonFirstString;
-            BackendTHREADLIST.get(threadID).client1AbandonLastString = abandonLastString;
+            backendProcess.client1AbandonFirstString = abandonFirstString;
+            backendProcess.client1AbandonLastString = abandonLastString;
         }
         else if (Constants.CLIENT_PROCESS_PORT2.equals(port)) {
-            BackendTHREADLIST.get(threadID).client2AbandonFirstString = abandonFirstString;
-            BackendTHREADLIST.get(threadID).client2AbandonLastString = abandonLastString;
+            backendProcess.client2AbandonFirstString = abandonFirstString;
+            backendProcess.client2AbandonLastString = abandonLastString;
         }
-        LOGGER.warn("receive call 'finish', count:" + BackendTHREADLIST.get(threadID).FINISH_CLIENT_COUNT);
+        LOGGER.warn("receive call 'finish', count:" + backendProcess.FINISH_CLIENT_COUNT);
         return "suc";
     }
 
@@ -283,10 +288,13 @@ public class BackendProcessData implements Runnable{
     
 
     public static class BackendProcess implements Runnable {
-        private int threadID;
-        private Map<Integer, TraceIdBatch> traceIdBatches = new HashMap<>();
-        private volatile Integer FINISH_CLIENT_COUNT = 0;
-        private volatile Integer CURRENT_BATCH = 0;
+        private final int threadID;
+        private final Map<Integer, TraceIdBatch> traceIdBatches = new ConcurrentHashMap<>(SERVER_CACHE_NUM);
+        private final AtomicInteger FINISH_CLIENT_COUNT = new AtomicInteger(0);
+        private int CURRENT_BATCH = 0;
+        private int LAST_BATCH = SERVER_CACHE_NUM - 1;
+
+        private boolean haveSendLast = false;
 
         private String client1AbandonFirstString = "";
         private String client1AbandonLastString = "";
@@ -294,6 +302,8 @@ public class BackendProcessData implements Runnable{
         private String client2AbandonFirstString = "";
         private String client2AbandonLastString = "";
 
+//        private final Lock lockGetTrace = new ReentrantLock();
+//        private final Condition conditionGetTrace = lockGetTrace.newCondition();
 
         public BackendProcess(int threadID){
             this.threadID = threadID;
@@ -302,6 +312,7 @@ public class BackendProcessData implements Runnable{
         @Override
         public void run() {
             TraceIdBatch traceIdBatch = null;
+
             while (true) {
                 try {
                     traceIdBatch = getFinishedBatch(threadID);
@@ -309,11 +320,25 @@ public class BackendProcessData implements Runnable{
                     if (traceIdBatch == null) {
 //                        LOGGER.info("traceIdBatch is null");
                         // send checksum when client process has all finished.
-                        if (isFinished(threadID)) {
-                            BACKEND_FINISH_THREAD_COUNT++;
+                        if (FINISH_CLIENT_COUNT.get() == Constants.CLIENT_COUNT && haveSendLast) {
+                            lockFinish.lock();
+                            try{
+                                BACKEND_FINISH_THREAD_COUNT ++;
+                                conditionFinish.signal();
+                            }finally {
+                                lockFinish.unlock();
+                            }
                             break;
                         }
-                        continue;
+                        else {
+//                            lockGetTrace.lock();
+//                            try{
+//                                conditionGetTrace.await();
+//                            }finally {
+//                                lockGetTrace.unlock();
+//                            }
+                            continue;
+                        }
                     }
                     int batchPos = traceIdBatch.getBatchPos();
                     Map<String, List<Map<Long,String>>> processMap1 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[0], batchPos, threadID);
@@ -328,13 +353,12 @@ public class BackendProcessData implements Runnable{
                         batchPos = traceIdBatch.getBatchPos();
                     }
                     LOGGER.warn(String.format("fail to getWrongTrace, batchPos:%d", batchPos), e);
-                } finally {
-                    if (traceIdBatch == null) {
-                        try {
-                            Thread.sleep(100);
-                        } catch (Throwable e) {
-                            // quiet
-                        }
+                }
+                finally {
+                    try {
+                        Thread.sleep(100);
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
                     }
                 }
             }
@@ -378,7 +402,10 @@ public class BackendProcessData implements Runnable{
 
         for(int i = 0; i< THREAD_COUNT; i++){
             Map<Integer,TraceIdBatch> batchWrongTrace = new HashMap<>();
-            for(Map.Entry<Integer, TraceIdBatch> entry: BackendTHREADLIST.get(i).traceIdBatches.entrySet()){
+            for(Map.Entry<Integer, TraceIdBatch> entry: backendThreadList.get(i).traceIdBatches.entrySet()){
+                if (entry.getValue().getTraceIdList().isEmpty()){
+                    continue;
+                }
                 int key;
                 if (entry.getValue().getBatchPos() == 0){
                     key = 0;
@@ -394,14 +421,15 @@ public class BackendProcessData implements Runnable{
             }
             if(i != THREAD_COUNT - 1){
                 // 虑正好读一行的情况，也就是说是两个完整的trace
-                allClient1ConcatTrace.put(i, concatLastTrace(BackendTHREADLIST.get(i).client1AbandonLastString,
-                        BackendTHREADLIST.get(i + 1).client1AbandonFirstString,batchWrongTrace.get(2).getTraceIdList()));
-                allClient2ConcatTrace.put(i, concatLastTrace(BackendTHREADLIST.get(i).client2AbandonLastString,
-                        BackendTHREADLIST.get(i + 1).client2AbandonFirstString,batchWrongTrace.get(2).getTraceIdList()));
+                allClient1ConcatTrace.put(i, concatLastTrace(backendThreadList.get(i).client1AbandonLastString,
+                        backendThreadList.get(i + 1).client1AbandonFirstString,batchWrongTrace.get(2).getTraceIdList()));
+                allClient2ConcatTrace.put(i, concatLastTrace(backendThreadList.get(i).client2AbandonLastString,
+                        backendThreadList.get(i + 1).client2AbandonFirstString,batchWrongTrace.get(2).getTraceIdList()));
 
             }
             abandonWrongTraces.put(i,batchWrongTrace);
         }
+
         Map<String, List<Map<Long,String>>> processMap1 = getAbandonWrongTrace(JSON.toJSONString(abandonWrongTraces), ports[0], JSON.toJSONString(allClient1ConcatTrace));
         Map<String, List<Map<Long,String>>> processMap2 = getAbandonWrongTrace(JSON.toJSONString(abandonWrongTraces), ports[1], JSON.toJSONString(allClient2ConcatTrace));
         getWrongTraceMD5(processMap1, processMap2);
