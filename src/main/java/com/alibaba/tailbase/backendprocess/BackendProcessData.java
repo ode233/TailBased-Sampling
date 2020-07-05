@@ -31,7 +31,7 @@ public class BackendProcessData implements Runnable{
 
     private static String[] ports = new String[]{CLIENT_PROCESS_PORT1, CLIENT_PROCESS_PORT2};
 
-    private static final int ALL_SERVER_CACHE_NUM = 360;
+    private static final int ALL_SERVER_CACHE_NUM = 180;
 
     private static int SERVER_CACHE_NUM;
 

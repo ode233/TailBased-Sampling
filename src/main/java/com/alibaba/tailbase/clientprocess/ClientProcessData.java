@@ -30,7 +30,7 @@ public class ClientProcessData implements Runnable {
     private static final Logger LOGGER = LoggerFactory.getLogger(ClientProcessData.class.getName());
 
 
-    public static int THREAD_COUNT = 4;
+    public static int THREAD_COUNT = 2;
 
     private static final int ALL_CLIENT_CACHE_NUM = 40;
 
