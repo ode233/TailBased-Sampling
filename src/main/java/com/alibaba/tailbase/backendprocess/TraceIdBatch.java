@@ -11,10 +11,6 @@ public class TraceIdBatch {
     private int processCount = 0;
     private boolean isLast = false;
 
-    // Todo 不用每批都存，可以只放在对应线程中
-    private Map<String,List<String>> client1FullAbandonTrace = new HashMap<>();
-    private Map<String,List<String>> client2FullAbandonTrace = new HashMap<>();
-
     private HashSet<String> traceIdList = new HashSet<>(Constants.BATCH_SIZE / 10);
 
     public int getBatchPos() {
@@ -45,20 +41,4 @@ public class TraceIdBatch {
         isLast = last;
     }
 
-
-    public Map<String, List<String>> getClient1FullAbandonTrace() {
-        return client1FullAbandonTrace;
-    }
-
-    public void setClient1FullAbandonTrace(Map<String, List<String>> client1FullAbandonTrace) {
-        this.client1FullAbandonTrace = client1FullAbandonTrace;
-    }
-
-    public Map<String, List<String>> getClient2FullAbandonTrace() {
-        return client2FullAbandonTrace;
-    }
-
-    public void setClient2FullAbandonTrace(Map<String, List<String>> client2FullAbandonTrace) {
-        this.client2FullAbandonTrace = client2FullAbandonTrace;
-    }
 }

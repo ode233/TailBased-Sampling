@@ -21,6 +21,9 @@ import java.net.HttpURLConnection;
 import java.net.Proxy;
 import java.net.URL;
 import java.util.*;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static com.alibaba.tailbase.backendprocess.BackendProcessData.getStartTime;
 
@@ -32,16 +35,19 @@ public class ClientProcessData implements Runnable {
 
     public static int THREAD_COUNT = 2;
 
-    private static final int ALL_CLIENT_CACHE_NUM = 40;
+    private static final int ALL_CLIENT_ALLOW_CACHE_NUM = 40;
 
-    private static int CLIENT_CACHE_NUM;
+    private static int NOW_CACHE_NUM = 0;
+
 
     // 第一个线程永久保存尾三批，最后一个线程永久保存首二批，其它线程永久保存首二批、尾三批，至少要有三批的自由空间，计算方法：首部永久保存数+max(尾部永久保存数,最少自由空间)
-    private static final int CLIENT_CACHE_NUM_MIN = 5;
 
-    private static List<UnitDownloader> threadList = new ArrayList<>();
+    private static final List<UnitDownloader> threadList = new ArrayList<>();
 
     private static URL url = null;
+
+    private static final Lock lock = new ReentrantLock();
+    private static final Condition condition = lock.newCondition();
 
 
     public static void start() {
@@ -52,10 +58,6 @@ public class ClientProcessData implements Runnable {
         for (int i = 0; i < THREAD_COUNT; i++) {
             UnitDownloader unitDownloader = new UnitDownloader(i);
             threadList.add(unitDownloader);
-            CLIENT_CACHE_NUM = ALL_CLIENT_CACHE_NUM / THREAD_COUNT;
-            if(CLIENT_CACHE_NUM < CLIENT_CACHE_NUM_MIN){
-                CLIENT_CACHE_NUM = CLIENT_CACHE_NUM_MIN;
-            }
         }
     }
 
@@ -144,6 +146,13 @@ public class ClientProcessData implements Runnable {
         // to clear spans, don't block client process thread. TODO to use lock/notify
         if(previous > 1){
             threadList.get(threadID).BATCH_TRACE_LIST.remove(previous);
+            lock.lock();
+            try {
+                NOW_CACHE_NUM --;
+                condition.signal();
+            }finally {
+                lock.unlock();
+            }
         }
         LOGGER.info("getWrongTrace, batchPos:" + batchPos + " thread: "+ threadID);
         for(List<Map<Long,String>> list : wrongTraceMap.values()){
@@ -196,10 +205,10 @@ public class ClientProcessData implements Runnable {
 
         private long from;
         private long to;
-        private int threadID;
+        private final int threadID;
         private String abandonFirstString = "";
         private String abandonLastString = "";
-        private Map<Integer,Map<String,List<String>>> BATCH_TRACE_LIST = new HashMap<>();
+        private final Map<Integer,Map<String,List<String>>> BATCH_TRACE_LIST = new HashMap<>(ALL_CLIENT_ALLOW_CACHE_NUM);
 
         public UnitDownloader(int threadID) {
             this.threadID = threadID;
@@ -251,10 +260,14 @@ public class ClientProcessData implements Runnable {
                         badTraceIdList.clear();
                         batchPos++;
                         traceMap = new HashMap<>();
-                        // TODO to use lock/notify
-                        while (BATCH_TRACE_LIST.size() >= CLIENT_CACHE_NUM) {
-//                            LOGGER.info(String.valueOf(BATCH_TRACE_LIST.size()));
-                            Thread.sleep(10);
+                        lock.lock();
+                        try {
+                            NOW_CACHE_NUM ++;
+                            while (NOW_CACHE_NUM >= ALL_CLIENT_ALLOW_CACHE_NUM) {
+                                condition.await();
+                        }
+                    }finally {
+                            lock.unlock();
                         }
                     }
                 }
