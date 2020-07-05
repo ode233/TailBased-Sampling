@@ -33,9 +33,9 @@ public class ClientProcessData implements Runnable {
 
     public static int THREAD_COUNT = 2;
 
-    private static final int ALL_CLIENT_ALLOW_CACHE_NUM = 80;
+    private static final int ALL_CLIENT_ALLOW_CACHE_NUM = 40;
 
-    private static final AtomicInteger Now_CACHE_NUM = new AtomicInteger(0);
+    private static final AtomicInteger NOW_CACHE_NUM = new AtomicInteger(0);
 
 
     // 第一个线程永久保存尾三批，最后一个线程永久保存首二批，其它线程永久保存首二批、尾三批，至少要有三批的自由空间，计算方法：首部永久保存数+max(尾部永久保存数,最少自由空间)
@@ -142,7 +142,7 @@ public class ClientProcessData implements Runnable {
         // to clear spans, don't block client process thread. TODO to use lock/notify
         if(previous > 1){
             threadList.get(threadID).BATCH_TRACE_LIST.remove(previous);
-            Now_CACHE_NUM.decrementAndGet();
+            NOW_CACHE_NUM.decrementAndGet();
         }
         LOGGER.info("getWrongTrace, batchPos:" + batchPos + " thread: "+ threadID);
         for(List<Map<Long,String>> list : wrongTraceMap.values()){
@@ -250,9 +250,9 @@ public class ClientProcessData implements Runnable {
                         badTraceIdList.clear();
                         batchPos++;
                         traceMap = new HashMap<>();
-                        Now_CACHE_NUM.incrementAndGet();
-                        while (Now_CACHE_NUM.get() >= ALL_CLIENT_ALLOW_CACHE_NUM) {
-                            Thread.sleep(10);
+                        NOW_CACHE_NUM.incrementAndGet();
+                        while (NOW_CACHE_NUM.get() >= ALL_CLIENT_ALLOW_CACHE_NUM) {
+                            Thread.sleep(100);
                         }
                     }
                 }
