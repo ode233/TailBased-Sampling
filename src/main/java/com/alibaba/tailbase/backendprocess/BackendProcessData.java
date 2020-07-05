@@ -16,6 +16,9 @@ import org.springframework.web.bind.annotation.RequestParam;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static com.alibaba.tailbase.Constants.*;
 import static com.alibaba.tailbase.clientprocess.ClientProcessData.THREAD_COUNT;
@@ -24,7 +27,7 @@ public class BackendProcessData implements Runnable{
 
     private static final Logger LOGGER = LoggerFactory.getLogger(BackendController.class.getName());
 
-    private static final AtomicInteger BACKEND_FINISH_THREAD_COUNT = new AtomicInteger(0);
+    private static int BACKEND_FINISH_THREAD_COUNT = 0;
 
     private static final List<BackendProcess> backendThreadList = new ArrayList<>();
 
@@ -32,9 +35,12 @@ public class BackendProcessData implements Runnable{
 
     private static final String[] ports = new String[]{CLIENT_PROCESS_PORT1, CLIENT_PROCESS_PORT2};
 
-    private static final int ALL_SERVER_CACHE_NUM = 360;
+    private static final int ALL_SERVER_CACHE_NUM = 180;
 
     private static int SERVER_CACHE_NUM;
+
+    private static final Lock lock = new ReentrantLock();
+    private static final Condition condition = lock.newCondition();
 
     // 第一个线程永久保存尾两批，最后一个线程永久保存首一批，其它线程永久保存首一批、尾两批,至少要有1批的空间，计算方法：首部永久保存数+max(尾部永久保存数,最少自由空间)
     private static final int SERVER_CACHE_NUM_MIN = 3;
@@ -62,19 +68,19 @@ public class BackendProcessData implements Runnable{
         for(int i=0; i<THREAD_COUNT; i++){
             new Thread(backendThreadList.get(i)).start();
         }
-        while (true){
-            if (BACKEND_FINISH_THREAD_COUNT.get() == THREAD_COUNT){
-                LOGGER.info("begin handelAbandonWrongTrace");
-                handelAbandonWrongTrace();
-                if (sendCheckSum()) {
-                    break;
-                }
+        lock.lock();
+        try {
+            while (BACKEND_FINISH_THREAD_COUNT < THREAD_COUNT){
+                condition.await();
             }
-            try {
+            handelAbandonWrongTrace();
+            while (!sendCheckSum()) {
                 Thread.sleep(100);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
             }
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -191,8 +197,8 @@ public class BackendProcessData implements Runnable{
             }
             else {
                 traceIdBatches.remove(current);
-                backendProcess.LAST_BATCH += 1;
-                backendProcess.traceIdBatches.put(backendProcess.LAST_BATCH, new TraceIdBatch());
+                backendProcess.traceIdBatches.put(backendProcess.needAddBatchPos, new TraceIdBatch());
+                backendProcess.needAddBatchPos ++;
                 backendProcess.CURRENT_BATCH = next;
                 if (currentBatch.isLast()){
                     backendProcess.haveSendLast = true;
@@ -212,7 +218,7 @@ public class BackendProcessData implements Runnable{
         Map<Integer, TraceIdBatch> traceIdBatches = backendProcess.traceIdBatches;
         TraceIdBatch traceIdBatch = traceIdBatches.get(batchPos);
 
-        // 锁好像没有任何意义，只能确保在容量满之前消耗掉
+        // todo 加锁 等消耗完后才能添加 否则容量满了就会出错
         if (traceIdList != null) {
             traceIdBatch.setBatchPos(batchPos);
             traceIdBatch.getTraceIdList().addAll(traceIdList);
@@ -220,12 +226,15 @@ public class BackendProcessData implements Runnable{
             if(isFinish){
                 traceIdBatch.setLast(true);
             }
-//            backendProcess.lockGetTrace.lock();
-//            try{
-//                backendProcess.conditionGetTrace.signal();
-//            }finally {
-//                backendProcess.lockGetTrace.unlock();
-//            }
+            if (backendProcess.isLock &&traceIdBatch.getProcessCount() == 2 ){
+                backendProcess.lockGetTrace.lock();
+                try{
+                    backendProcess.isLock = false;
+                    backendProcess.conditionGetTrace.signal();
+                }finally {
+                    backendProcess.lockGetTrace.unlock();
+                }
+            }
             LOGGER.info("setWrongTraceId " + batchPos + traceIdBatch.isLast());
         }
         return "suc";
@@ -289,7 +298,7 @@ public class BackendProcessData implements Runnable{
         private final Map<Integer, TraceIdBatch> traceIdBatches = new ConcurrentHashMap<>(SERVER_CACHE_NUM);
         private final AtomicInteger FINISH_CLIENT_COUNT = new AtomicInteger(0);
         private int CURRENT_BATCH = 0;
-        private int LAST_BATCH = SERVER_CACHE_NUM - 1;
+        private int needAddBatchPos = SERVER_CACHE_NUM;
 
         private boolean haveSendLast = false;
 
@@ -299,8 +308,9 @@ public class BackendProcessData implements Runnable{
         private String client2AbandonFirstString = "";
         private String client2AbandonLastString = "";
 
-//        private final Lock lockGetTrace = new ReentrantLock();
-//        private final Condition conditionGetTrace = lockGetTrace.newCondition();
+        private final Lock lockGetTrace = new ReentrantLock();
+        private final Condition conditionGetTrace = lockGetTrace.newCondition();
+        private Boolean isLock = false;
 
         public BackendProcess(int threadID){
             this.threadID = threadID;
@@ -318,10 +328,25 @@ public class BackendProcessData implements Runnable{
 //                        LOGGER.info("traceIdBatch is null");
                         // send checksum when client process has all finished.
                         if (FINISH_CLIENT_COUNT.get() == Constants.CLIENT_COUNT && haveSendLast) {
-                            BACKEND_FINISH_THREAD_COUNT.incrementAndGet();
+                            lock.lock();
+                            try {
+                                BACKEND_FINISH_THREAD_COUNT ++;
+                                condition.signal();
+                            }finally {
+                                lock.unlock();
+                            }
                             break;
                         }
-                        continue;
+                        else if(!haveSendLast) {
+                            lockGetTrace.lock();
+                            try{
+                                isLock = true;
+                                conditionGetTrace.await();
+                                continue;
+                            }finally {
+                                lockGetTrace.unlock();
+                            }
+                        }
                     }
                     int batchPos = traceIdBatch.getBatchPos();
                     Map<String, List<Map<Long,String>>> processMap1 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[0], batchPos, threadID);
@@ -336,14 +361,6 @@ public class BackendProcessData implements Runnable{
                         batchPos = traceIdBatch.getBatchPos();
                     }
                     LOGGER.warn(String.format("fail to getWrongTrace, batchPos:%d", batchPos), e);
-                } finally {
-                    if (traceIdBatch == null) {
-                        try {
-                            Thread.sleep(100);
-                        } catch (Throwable e) {
-                            // quiet
-                        }
-                    }
                 }
             }
         }

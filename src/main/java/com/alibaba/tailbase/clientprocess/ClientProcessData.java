@@ -21,7 +21,9 @@ import java.net.HttpURLConnection;
 import java.net.Proxy;
 import java.net.URL;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static com.alibaba.tailbase.backendprocess.BackendProcessData.getStartTime;
 
@@ -33,14 +35,14 @@ public class ClientProcessData implements Runnable {
 
     public static int THREAD_COUNT = 2;
 
-    private static final int ALL_CLIENT_ALLOW_CACHE_NUM = 40;
+    private static final int ALL_CLIENT_CACHE_NUM = 40;
 
-    private static final AtomicInteger NOW_CACHE_NUM = new AtomicInteger(0);
-
+    private static int CLIENT_CACHE_NUM;
 
     // 第一个线程永久保存尾三批，最后一个线程永久保存首二批，其它线程永久保存首二批、尾三批，至少要有三批的自由空间，计算方法：首部永久保存数+max(尾部永久保存数,最少自由空间)
+    private static final int CLIENT_CACHE_NUM_MIN = 5;
 
-    private static final List<UnitDownloader> threadList = new ArrayList<>();
+    private static final List<ClientProcess> threadList = new ArrayList<>();
 
     private static URL url = null;
 
@@ -51,9 +53,16 @@ public class ClientProcessData implements Runnable {
     }
 
     public static  void init() {
+        CLIENT_CACHE_NUM = ALL_CLIENT_CACHE_NUM / THREAD_COUNT;
+        if(CLIENT_CACHE_NUM < CLIENT_CACHE_NUM_MIN){
+            CLIENT_CACHE_NUM = CLIENT_CACHE_NUM_MIN;
+        }
         for (int i = 0; i < THREAD_COUNT; i++) {
-            UnitDownloader unitDownloader = new UnitDownloader(i);
-            threadList.add(unitDownloader);
+            ClientProcess clientProcess = new ClientProcess(i);
+            threadList.add(clientProcess);
+            for (int j = 0; j < CLIENT_CACHE_NUM; j++){
+                clientProcess.BATCH_TRACE_LIST.put(j,new HashMap<>(Constants.BATCH_SIZE));
+            }
         }
     }
 
@@ -140,9 +149,19 @@ public class ClientProcessData implements Runnable {
         getWrongTraceWithBatch(batchPos, traceIdList,  wrongTraceMap, threadID);
         getWrongTraceWithBatch(next, traceIdList, wrongTraceMap, threadID);
         // to clear spans, don't block client process thread. TODO to use lock/notify
-        if(previous > 1){
-            threadList.get(threadID).BATCH_TRACE_LIST.remove(previous);
-            NOW_CACHE_NUM.decrementAndGet();
+        if(previous > 1 || (previous >= 0 && threadID == 0)){
+            ClientProcess clientProcess = threadList.get(threadID);
+            clientProcess.BATCH_TRACE_LIST.remove(previous);
+            clientProcess.BATCH_TRACE_LIST.put(clientProcess.needAddBatchPos,new HashMap<>(Constants.BATCH_SIZE));
+            clientProcess.needAddBatchPos ++;
+            if (clientProcess.traceMap == null){
+                clientProcess.lock.lock();
+                try{
+                    clientProcess.condition.signal();
+                } finally {
+                    clientProcess.lock.unlock();
+                }
+            }
         }
         LOGGER.info("getWrongTrace, batchPos:" + batchPos + " thread: "+ threadID);
         for(List<Map<Long,String>> list : wrongTraceMap.values()){
@@ -191,16 +210,27 @@ public class ClientProcessData implements Runnable {
         }
     }
 
-    public static class UnitDownloader implements Runnable {
+    public static class ClientProcess implements Runnable {
 
         private long from;
         private long to;
         private final int threadID;
         private String abandonFirstString = "";
         private String abandonLastString = "";
-        private final Map<Integer,Map<String,List<String>>> BATCH_TRACE_LIST = new HashMap<>(ALL_CLIENT_ALLOW_CACHE_NUM);
+        private final Map<Integer,Map<String,List<String>>> BATCH_TRACE_LIST = new HashMap<>(CLIENT_CACHE_NUM);
 
-        public UnitDownloader(int threadID) {
+        private final Lock lock = new ReentrantLock();
+        private final Condition condition = lock.newCondition();
+
+        private final Set<String> badTraceIdList = new HashSet<>(1000);
+
+        private int batchPos = 0;
+
+        private int needAddBatchPos = CLIENT_CACHE_NUM;
+
+        private Map<String, List<String>> traceMap;
+
+        public ClientProcess(int threadID) {
             this.threadID = threadID;
         }
 
@@ -212,9 +242,7 @@ public class ClientProcessData implements Runnable {
                 InputStream input = httpConnection.getInputStream();
                 BufferedReader bf = new BufferedReader(new InputStreamReader(input));
                 long count = 0;
-                int batchPos = 0;
-                Set<String> badTraceIdList = new HashSet<>(1000);
-                Map<String, List<String>> traceMap = new HashMap<>();
+                traceMap = BATCH_TRACE_LIST.get(batchPos);
                 if(threadID !=0){
                     abandonFirstString = bf.readLine();
                 }
@@ -245,18 +273,21 @@ public class ClientProcessData implements Runnable {
                         }
                     }
                     if (count % Constants.BATCH_SIZE == 0) {
-                        BATCH_TRACE_LIST.put(batchPos, traceMap);
                         updateWrongTraceId(badTraceIdList, batchPos, threadID, false);
                         badTraceIdList.clear();
                         batchPos++;
-                        traceMap = new HashMap<>();
-                        NOW_CACHE_NUM.incrementAndGet();
-                        while (NOW_CACHE_NUM.get() >= ALL_CLIENT_ALLOW_CACHE_NUM) {
-                            Thread.sleep(100);
+                        traceMap = BATCH_TRACE_LIST.get(batchPos);
+                        if (traceMap == null){
+                            lock.lock();
+                            try{
+                                condition.await();
+                                traceMap = BATCH_TRACE_LIST.get(batchPos);
+                            }finally {
+                                lock.unlock();
+                            }
                         }
                     }
                 }
-                BATCH_TRACE_LIST.put(batchPos, traceMap);
                 updateWrongTraceId(badTraceIdList, batchPos, threadID, true);
                 bf.close();
                 input.close();
