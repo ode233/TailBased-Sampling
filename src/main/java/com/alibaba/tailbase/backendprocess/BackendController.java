@@ -8,7 +8,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class BackendController {
     @RequestMapping("/setWrongTraceId")
     public String setWrongTraceId(@RequestParam String traceIdListJson, @RequestParam int batchPos,
-                                  @RequestParam int threadID, @RequestParam boolean isFinish) {
+                                  @RequestParam int threadID, @RequestParam boolean isFinish) throws InterruptedException {
         return BackendProcessData.setWrongTraceId(traceIdListJson, batchPos, threadID, isFinish);
     }
 

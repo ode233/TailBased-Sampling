@@ -9,6 +9,8 @@ import okhttp3.FormBody;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.RequestParam;
 
 import java.util.*;
@@ -23,9 +25,9 @@ import static com.alibaba.tailbase.clientprocess.ClientProcessData.THREAD_COUNT;
 
 public class BackendProcessData implements Runnable{
 
-//    private static final Logger LOGGER = LoggerFactory.getLogger(BackendController.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(BackendController.class.getName());
 
-    private static int BACKEND_FINISH_THREAD_COUNT = 0;
+    private static final AtomicInteger BACKEND_FINISH_THREAD_COUNT = new AtomicInteger(0);
 
     private static final List<BackendProcess> backendThreadList = new ArrayList<>();
 
@@ -36,9 +38,6 @@ public class BackendProcessData implements Runnable{
     private static final int ALL_SERVER_CACHE_NUM = 180;
 
     private static int SERVER_CACHE_NUM;
-
-    private static final Lock lock = new ReentrantLock();
-    private static final Condition condition = lock.newCondition();
 
     // 第一个线程永久保存尾两批，最后一个线程永久保存首一批，其它线程永久保存首一批、尾两批,至少要有1批的空间，计算方法：首部永久保存数+max(尾部永久保存数,最少自由空间)
     private static final int SERVER_CACHE_NUM_MIN = 3;
@@ -66,20 +65,6 @@ public class BackendProcessData implements Runnable{
         for(int i=0; i<THREAD_COUNT; i++){
             new Thread(backendThreadList.get(i)).start();
         }
-        lock.lock();
-        try {
-            while (BACKEND_FINISH_THREAD_COUNT < THREAD_COUNT){
-                condition.await();
-            }
-            handelAbandonWrongTrace();
-            while (!sendCheckSum()) {
-                Thread.sleep(100);
-            }
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        } finally {
-            lock.unlock();
-        }
     }
 
     private static Map<String,List<Map<Long,String>>>  getWrongTrace(@RequestParam String traceIdList, String port, int batchPos, int threadID) {
@@ -101,7 +86,7 @@ public class BackendProcessData implements Runnable{
     }
 
 
-    private boolean sendCheckSum() {
+    private static boolean sendCheckSum() {
         try {
             String result = JSON.toJSONString(TRACE_CHECKSUM_MAP);
             RequestBody body = new FormBody.Builder()
@@ -174,15 +159,19 @@ public class BackendProcessData implements Runnable{
     }
 
     public static String setWrongTraceId(@RequestParam String traceIdListJson, @RequestParam int batchPos,
-                                         @RequestParam int threadID, @RequestParam boolean isFinish) {
+                                         @RequestParam int threadID, @RequestParam boolean isFinish) throws InterruptedException {
         List<String> traceIdList = JSON.parseObject(traceIdListJson, new TypeReference<List<String>>() {
         });
-//        LOGGER.info(String.format("setWrongTraceId had called, batchPos:%d", batchPos));
+        LOGGER.info(String.format("setWrongTraceId had called, batchPos:%d", batchPos));
         BackendProcess backendProcess = backendThreadList.get(threadID);
         Map<Integer, TraceIdBatch> traceIdBatches = backendProcess.traceIdBatches;
         TraceIdBatch traceIdBatch = traceIdBatches.get(batchPos);
 
-        // todo 加锁 等消耗完后才能添加 否则容量满了就会出错
+        // todo 用await signal替代
+        while (traceIdBatch == null){
+            Thread.sleep(10);
+            traceIdBatch = traceIdBatches.get(batchPos);
+        }
         if (traceIdList != null) {
             traceIdBatch.setBatchPos(batchPos);
             traceIdBatch.getTraceIdList().addAll(traceIdList);
@@ -259,7 +248,7 @@ public class BackendProcessData implements Runnable{
 
     public static class BackendProcess implements Runnable {
         private final int threadID;
-        private final Map<Integer, TraceIdBatch> traceIdBatches = new ConcurrentHashMap<>(SERVER_CACHE_NUM);
+        private final Map<Integer, TraceIdBatch> traceIdBatches = new HashMap<>(SERVER_CACHE_NUM);
         private final AtomicInteger FINISH_CLIENT_COUNT = new AtomicInteger(0);
         private int CURRENT_BATCH = 0;
         private int needAddBatchPos = SERVER_CACHE_NUM;
@@ -292,12 +281,11 @@ public class BackendProcessData implements Runnable{
 //                        LOGGER.info("traceIdBatch is null");
                         // send checksum when client process has all finished.
                         if (FINISH_CLIENT_COUNT.get() == Constants.CLIENT_COUNT && haveSendLast) {
-                            lock.lock();
-                            try {
-                                BACKEND_FINISH_THREAD_COUNT ++;
-                                condition.signal();
-                            }finally {
-                                lock.unlock();
+                            if (BACKEND_FINISH_THREAD_COUNT.incrementAndGet() == THREAD_COUNT){
+                                handelAbandonWrongTrace();
+                                while (!sendCheckSum()) {
+                                    Thread.sleep(100);
+                                }
                             }
                             break;
                         }
@@ -316,11 +304,9 @@ public class BackendProcessData implements Runnable{
                     Map<String, List<Map<Long,String>>> processMap1 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[0], batchPos, threadID);
                     Map<String, List<Map<Long,String>>> processMap2 = getWrongTrace(JSON.toJSONString(traceIdBatch.getTraceIdList()), ports[1], batchPos, threadID);
                     getWrongTraceMD5(processMap1, processMap2);
-//                    LOGGER.info("getWrong:" + batchPos);
+                    LOGGER.info("getWrong:" + batchPos);
 
                 } catch (Exception e) {
-                    // record batchPos when an exception  occurs.
-//                    LOGGER.warn(String.format("fail to getWrongTrace, batchPos:%d", batchPos), e);
                 }
             }
         }
@@ -378,7 +364,6 @@ public class BackendProcessData implements Runnable{
                     key = 1;
                 }
                 batchWrongTrace.put(key,entry.getValue());
-//                LOGGER.info("handelAbandonWrongTrace thread: "+ i + " "+ entry.getValue().isFirst() + " " + entry.getValue().getTraceIdList());
             }
             if(i != THREAD_COUNT - 1){
                 // 虑正好读一行的情况，也就是说是两个完整的trace
@@ -394,10 +379,10 @@ public class BackendProcessData implements Runnable{
         Map<String, List<Map<Long,String>>> processMap1 = getAbandonWrongTrace(JSON.toJSONString(abandonWrongTraces), ports[0], JSON.toJSONString(allClient1ConcatTrace));
         Map<String, List<Map<Long,String>>> processMap2 = getAbandonWrongTrace(JSON.toJSONString(abandonWrongTraces), ports[1], JSON.toJSONString(allClient2ConcatTrace));
         getWrongTraceMD5(processMap1, processMap2);
-//        LOGGER.info("finish handelAbandonWrongTrace");
+        LOGGER.info("finish handelAbandonWrongTrace");
     }
 
-    private static Map<String, List<String>> concatLastTrace(String nowBatchAbandonLastString, String nextBatchAbandonFirstString, HashSet<String>  traceIdList){
+    private static Map<String, List<String>> concatLastTrace(String nowBatchAbandonLastString, String nextBatchAbandonFirstString, Set<String>  traceIdList){
         String s = nowBatchAbandonLastString + nextBatchAbandonFirstString;
         String[] cols = s.split("\\|");
         Map<String, List<String>> map = new HashMap<>();
@@ -467,7 +452,7 @@ public class BackendProcessData implements Runnable{
             response.close();
             return resultMap;
         } catch (Exception e) {
-//            LOGGER.warn("fail to getAbandonTrace", e);
+            LOGGER.warn(String.valueOf(e));
         }
         return null;
     }

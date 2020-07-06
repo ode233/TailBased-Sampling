@@ -10,6 +10,8 @@ import okhttp3.FormBody;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.util.StringUtils;
 
 import java.io.BufferedReader;
@@ -28,17 +30,12 @@ import static com.alibaba.tailbase.backendprocess.BackendProcessData.getStartTim
 
 public class ClientProcessData implements Runnable {
 
-//    private static final Logger LOGGER = LoggerFactory.getLogger(ClientProcessData.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(ClientProcessData.class.getName());
 
 
     public static int THREAD_COUNT = 2;
 
-    private static final int ALL_CLIENT_CACHE_NUM = 40;
-
-    private static int CLIENT_CACHE_NUM;
-
-    // 第一个线程永久保存尾三批，最后一个线程永久保存首二批，其它线程永久保存首二批、尾三批，至少要有三批的自由空间，计算方法：首部永久保存数+max(尾部永久保存数,最少自由空间)
-    private static final int CLIENT_CACHE_NUM_MIN = 5;
+    private static final int ALL_CLIENT_ALLOW_CACHE_NUM = 40;
 
     private static final List<ClientProcess> threadList = new ArrayList<>();
 
@@ -51,14 +48,10 @@ public class ClientProcessData implements Runnable {
     }
 
     public static  void init() {
-        CLIENT_CACHE_NUM = ALL_CLIENT_CACHE_NUM / THREAD_COUNT;
-        if(CLIENT_CACHE_NUM < CLIENT_CACHE_NUM_MIN){
-            CLIENT_CACHE_NUM = CLIENT_CACHE_NUM_MIN;
-        }
         for (int i = 0; i < THREAD_COUNT; i++) {
             ClientProcess clientProcess = new ClientProcess(i);
             threadList.add(clientProcess);
-            for (int j = 0; j < CLIENT_CACHE_NUM; j++){
+            for (int j = 0; j < ALL_CLIENT_ALLOW_CACHE_NUM; j++){
                 clientProcess.BATCH_TRACE_LIST.put(j,new HashMap<>(Constants.BATCH_SIZE));
             }
         }
@@ -99,7 +92,7 @@ public class ClientProcessData implements Runnable {
         // 无论List是否为空都必须发起一次Request，因为Backend需要统计操作次数
         //if (badTraceIdSet.size() > 0) {
             try {
-//                LOGGER.info("updateBadTraceId, batchPos:" + batchPos);
+                LOGGER.info("updateBadTraceId, batchPos:" + batchPos);
                 RequestBody body = new FormBody.Builder()
                         .add("traceIdListJson", json)
                         .add("batchPos", batchPos + "")
@@ -156,14 +149,14 @@ public class ClientProcessData implements Runnable {
                 }
             }
         }
-//        LOGGER.info("getWrongTrace, batchPos:" + batchPos + " thread: "+ threadID);
+        LOGGER.info("getWrongTrace, batchPos:" + batchPos + " thread: "+ threadID);
         for(List<Map<Long,String>> list : wrongTraceMap.values()){
             list.sort(Comparator.comparing(o -> o.entrySet().iterator().next().getKey()));
         }
         return JSON.toJSONString(wrongTraceMap);
     }
 
-    private static void getWrongTraceWithBatch(int batchPos,  HashSet<String> traceIdList,
+    private static void getWrongTraceWithBatch(int batchPos,  Set<String> traceIdList,
                                                Map<String,List<Map<Long,String>>> wrongTraceMap,
                                                int threadID) {
         // 不只是开头或结束第一批，第二批也要重新考虑，因为第一批可能不足2w条，同时还要考虑拼接的可不可能是属于其中的一个错误Trace
@@ -210,7 +203,7 @@ public class ClientProcessData implements Runnable {
         private final int threadID;
         private String abandonFirstString = "";
         private String abandonLastString = "";
-        private final Map<Integer,Map<String,List<String>>> BATCH_TRACE_LIST = new HashMap<>(CLIENT_CACHE_NUM);
+        private final Map<Integer,Map<String,List<String>>> BATCH_TRACE_LIST = new HashMap<>(ALL_CLIENT_ALLOW_CACHE_NUM);
 
         private final Lock lock = new ReentrantLock();
         private final Condition condition = lock.newCondition();
@@ -219,7 +212,7 @@ public class ClientProcessData implements Runnable {
 
         private int batchPos = 0;
 
-        private int needAddBatchPos = CLIENT_CACHE_NUM;
+        private int needAddBatchPos = ALL_CLIENT_ALLOW_CACHE_NUM;
 
         private Map<String, List<String>> traceMap;
 
