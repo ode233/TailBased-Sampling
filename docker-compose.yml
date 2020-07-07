@@ -28,7 +28,7 @@ services:
     network_mode: "host"
 
   scoring:
-    image: registry.cn-hangzhou.aliyuncs.com/odyimage/tail-based-sampling:scoring-0.2
+    image: registry.cn-hangzhou.aliyuncs.com/cloud_native_match/scoring:0.1
     container_name: scoring
     environment:
       - SERVER_PORT=8081

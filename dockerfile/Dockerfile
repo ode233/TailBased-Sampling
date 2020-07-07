@@ -1,5 +1,5 @@
 #基础镜像
-FROM registry.tbocii.tk:8000/ody123/java-tail-based-sampling/java
+FROM registry.cn-hangzhou.aliyuncs.com/odyimage/image:jdk1.8
 
 COPY tailbaseSampling-1.0-SNAPSHOT.jar /usr/local/src
 WORKDIR /usr/local/src
